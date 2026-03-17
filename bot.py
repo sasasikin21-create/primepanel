@@ -27,9 +27,10 @@ PAYMENT_REQUISITES = """🟢 Сбербанк 🟢
 +79085545373
 Александр Валерьевич Ш."""
 
-DATA_FILE = os.path.join(BASE_DIR, "users_data.json")
-DATABASE_FILE = os.path.join(BASE_DIR, "bot_database.db")
-KEYS_FOLDER = os.path.join(BASE_DIR, "keys")
+# Стало (для хостинга):
+DATA_FILE = '/tmp/users_data.json'
+DATABASE_FILE = '/tmp/bot_database.db'
+KEYS_FOLDER = '/tmp/keys'
 LOG_FILE = os.path.join(BASE_DIR, "bot.log")
 
 TICKETS_PER_PAGE = 5
