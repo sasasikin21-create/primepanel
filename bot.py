@@ -7,6 +7,7 @@ import re
 import secrets
 import sqlite3
 import string
+from flask import Flask, request 
 import sys
 import time
 import logging
@@ -3162,25 +3163,28 @@ def webhook():
     return '!', 200
 
 if __name__ == '__main__':
-    init_keys_folder()
-    init_database()
-    init_admins_database()
-    
-    # Удаляем старый вебхук
-    bot.remove_webhook()
-    
-    # Устанавливаем новый
-    # railway_url - это домен, который дает тебе Railway (например, my-bot.railway.app)
-    railway_url = os.getenv('RAILWAY_PUBLIC_DOMAIN')
-    
-    if railway_url:
-        bot.set_webhook(url=f"https://{railway_url}/{BOT_TOKEN}")
-        logger.info(f"✅ Вебхук установлен: {railway_url}")
-        app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
-    else:
-        # Резервный вариант, если что-то пошло не так с доменом
-        logger.info("⚠️ Домен Railway не найден, запускаю Polling")
-        bot.infinity_polling(timeout=20, long_polling_timeout=10, skip_pending=True)
+    try:
+        init_keys_folder()
+        init_database()
+        init_admins_database()
+        
+        bot.remove_webhook()
+        railway_url = os.getenv('RAILWAY_PUBLIC_DOMAIN')
+        
+        if railway_url:
+            bot.set_webhook(url=f"https://{railway_url}/{BOT_TOKEN}")
+            logger.info(f"✅ Вебхук установлен: {railway_url}")
+            app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+        else:
+            logger.info("⚠️ Домен не найден, запускаю Polling")
+            bot.infinity_polling(timeout=20, long_polling_timeout=10, skip_pending=True)
+
+    except Exception as e:
+        logger.critical(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
+    finally:
+        if db_connection:
+            db_connection.close()
+        logger.info("Соединение с БД закрыто")
 
     except KeyboardInterrupt:
         logger.info("Бот остановлен пользователем (Ctrl+C)")
