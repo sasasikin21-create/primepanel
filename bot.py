@@ -3133,13 +3133,13 @@ def handle_callback(call):
 
 
 # ========================================
-# ЗАПУСК
+# ЗАПУСК БОТА
 # ========================================
 def main():
     try:
+        init_keys_folder()
         init_database()
         refresh_key_files()
-        restore_state_from_storage()
         init_admins_database()
 
         logger.info("========================================")
@@ -3150,41 +3150,26 @@ def main():
         logger.info("========================================")
 
         bot.remove_webhook()
-       # === НАСТРОЙКА WEBHOOK ДЛЯ RAILWAY ===
-from flask import Flask, request
 
-app = Flask(__name__)
+        while True:
+            try:
+                logger.info("🔌 Подключаюсь к Telegram...")
+                bot.infinity_polling(
+                    timeout=15,
+                    long_polling_timeout=10,
+                    skip_pending=True,
+                    none_stop=True
+                )
+            except Exception as e:
+                logger.critical(f"💥 БОТ ОТВАЛИЛСЯ: {type(e).__name__}: {e}")
+                logger.info("🔄 Перезапуск через 10 секунд...")
+                
+                try:
+                    bot.stop_polling()
+                except:
+                    pass
 
-@app.route('/' + BOT_TOKEN, methods=['POST'])
-def webhook():
-    json_string = request.get_data().decode('utf-8')
-    update = telebot.types.Update.de_json(json_string)
-    bot.process_new_updates([update])
-    return '!', 200
-
-if __name__ == '__main__':
-    try:
-        init_keys_folder()
-        init_database()
-        init_admins_database()
-        
-        bot.remove_webhook()
-        railway_url = os.getenv('RAILWAY_PUBLIC_DOMAIN')
-        
-        if railway_url:
-            bot.set_webhook(url=f"https://{railway_url}/{BOT_TOKEN}")
-            logger.info(f"✅ Вебхук установлен: {railway_url}")
-            app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
-        else:
-            logger.info("⚠️ Домен не найден, запускаю Polling")
-            bot.infinity_polling(timeout=20, long_polling_timeout=10, skip_pending=True)
-
-    except Exception as e:
-        logger.critical(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
-    finally:
-        if db_connection:
-            db_connection.close()
-        logger.info("Соединение с БД закрыто")
+                time.sleep(10)
 
     except KeyboardInterrupt:
         logger.info("Бот остановлен пользователем (Ctrl+C)")
@@ -3196,5 +3181,5 @@ if __name__ == '__main__':
         logger.info("Соединение с БД закрыто")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
