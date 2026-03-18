@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from threading import Lock
 from typing import Optional, List, Tuple, Dict
 
-telebot.logger.setLevel(logging.DEBUG)  # или INFO
+telebot.logger.setLevel(10)  # DEBUG=10
 
 # ========================================
 # КОНФИГУРАЦИЯ
