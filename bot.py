@@ -3149,13 +3149,38 @@ def main():
         logger.info("========================================")
 
         bot.remove_webhook()
-        while True:
-            try:
-                bot.infinity_polling(timeout=20, long_polling_timeout=10, skip_pending=True)
-            except Exception as e:
-                logger.error(f"Критическая ошибка в цикле polling: {e}")
-                logger.info("Перезапуск через 15 секунд...")
-                time.sleep(15)
+       # === НАСТРОЙКА WEBHOOK ДЛЯ RAILWAY ===
+from flask import Flask, request
+
+app = Flask(__name__)
+
+@app.route('/' + BOT_TOKEN, methods=['POST'])
+def webhook():
+    json_string = request.get_data().decode('utf-8')
+    update = telebot.types.Update.de_json(json_string)
+    bot.process_new_updates([update])
+    return '!', 200
+
+if __name__ == '__main__':
+    init_keys_folder()
+    init_database()
+    init_admins_database()
+    
+    # Удаляем старый вебхук
+    bot.remove_webhook()
+    
+    # Устанавливаем новый
+    # railway_url - это домен, который дает тебе Railway (например, my-bot.railway.app)
+    railway_url = os.getenv('RAILWAY_PUBLIC_DOMAIN')
+    
+    if railway_url:
+        bot.set_webhook(url=f"https://{railway_url}/{BOT_TOKEN}")
+        logger.info(f"✅ Вебхук установлен: {railway_url}")
+        app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+    else:
+        # Резервный вариант, если что-то пошло не так с доменом
+        logger.info("⚠️ Домен Railway не найден, запускаю Polling")
+        bot.infinity_polling(timeout=20, long_polling_timeout=10, skip_pending=True)
 
     except KeyboardInterrupt:
         logger.info("Бот остановлен пользователем (Ctrl+C)")
