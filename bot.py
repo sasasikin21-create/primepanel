@@ -1,7 +1,7 @@
+import logging
 import telebot
 from telebot import types
 
-import logging
 import json
 import os
 import re
