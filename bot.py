@@ -9,7 +9,7 @@ import re
 import secrets
 import sqlite3
 import string
-from flask import Flask, request 
+from flask import Flask, request
 import sys
 import time
 import logging
@@ -2959,14 +2959,21 @@ def handle_callback(call):
     if call.data.startswith("confirm_deposit_"):
         if not is_admin(user_id):
             return
+
         deposit_id = int(call.data.split("_")[-1])
         deposit = get_deposit_by_id(deposit_id)
+
         if not deposit or deposit[4] != "pending":
             bot.answer_callback_query(call.id, "Заявка уже обработана.", show_alert=True)
             return
+
+        # сначала меняем статус (чтобы второй раз не нажали)
         if update_deposit_status(deposit_id, "confirmed", user_id):
-            target_user_id, amount, *_ = deposit
+            target_user_id = int(deposit[1])  # <-- ВАЖНО
+            amount = float(deposit[2])  # <-- ВАЖНО
+
             new_bal = update_user_balance(target_user_id, amount)
+
             try:
                 bot.send_message(
                     target_user_id,
@@ -2975,36 +2982,53 @@ def handle_callback(call):
                 )
             except Exception:
                 pass
-            bot.delete_message(chat_id, msg_id)
+
+            try:
+                bot.delete_message(chat_id, msg_id)
+            except Exception:
+                pass
+
             bot.answer_callback_query(call.id, "✅ Подтверждено!")
             show_deposit_requests(chat_id)
         else:
-            bot.answer_callback_query(call.id, "❌ Ошибка.", show_alert=True)
+            bot.answer_callback_query(call.id, "Заявка уже обработана.", show_alert=True)
+
         return
 
     if call.data.startswith("reject_deposit_"):
         if not is_admin(user_id):
             return
+
         deposit_id = int(call.data.split("_")[-1])
         deposit = get_deposit_by_id(deposit_id)
+
         if not deposit or deposit[4] != "pending":
             bot.answer_callback_query(call.id, "Заявка уже обработана.", show_alert=True)
             return
+
         if update_deposit_status(deposit_id, "rejected", user_id):
-            target_user_id, *_ = deposit
+            target_user_id = int(deposit[1])  # <-- ВАЖНО
+
             try:
                 bot.send_message(
                     target_user_id,
-                    LANGUAGES[get_lang(target_user_id)]["deposit_rejected_msg"].format("Проверьте реквизиты и попробуйте снова"),
+                    LANGUAGES[get_lang(target_user_id)]["deposit_rejected_msg"].format(
+                        "Проверьте реквизиты и попробуйте снова"),
                     parse_mode="HTML"
                 )
             except Exception:
                 pass
-            bot.delete_message(chat_id, msg_id)
+
+            try:
+                bot.delete_message(chat_id, msg_id)
+            except Exception:
+                pass
+
             bot.answer_callback_query(call.id, "❌ Отклонено!")
             show_deposit_requests(chat_id)
         else:
-            bot.answer_callback_query(call.id, "❌ Ошибка.", show_alert=True)
+            bot.answer_callback_query(call.id, "Заявка уже обработана.", show_alert=True)
+
         return
 
     if call.data == "list_deposits":
