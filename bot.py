@@ -3161,6 +3161,9 @@ def handle_callback(call):
 # ========================================
 # ЗАПУСК БОТА
 # ========================================
+import telebot
+telebot.logger.setLevel(logging.DEBUG)  # чтобы увидеть реальную причину, если что-то сломается
+
 def main():
     try:
         init_database()
@@ -3168,27 +3171,25 @@ def main():
         init_admins_database()
 
         logger.info("✅ БОТ ГОТОВ К РАБОТЕ")
+        bot.remove_webhook(drop_pending_updates=True)
 
-        # На всякий случай удаляем webhook
-        bot.remove_webhook()
-
-        # ВАЖНО: запускать polling ОДИН раз, без while True
-        bot.infinity_polling(timeout=20, long_polling_timeout=10, skip_pending=True)
+        logger.info("🔌 Запускаю infinity_polling...")
+        bot.infinity_polling(
+            timeout=20,
+            long_polling_timeout=10,
+            skip_pending=True
+        )
 
     except KeyboardInterrupt:
         logger.info("Бот остановлен пользователем (Ctrl+C)")
     except Exception as e:
-        logger.critical(f"Критическая ошибка при запуске бота: {e}")
+        logger.exception(f"❌ Критическая ошибка при запуске бота: {e}")
         raise
     finally:
-        try:
-            bot.stop_polling()
-        except Exception:
-            pass
         if db_connection:
             db_connection.close()
         logger.info("Соединение с БД закрыто")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
