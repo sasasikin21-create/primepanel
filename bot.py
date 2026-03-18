@@ -1,6 +1,8 @@
 import telebot
 from telebot import types
-
+telebot.logger.setLevel(logging.DEBUG)
+import logging
+telebot.logger.setLevel(logging.INFO)
 import json
 import os
 import re
