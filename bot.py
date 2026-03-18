@@ -1,8 +1,7 @@
 import telebot
 from telebot import types
-telebot.logger.setLevel(logging.DEBUG)
+
 import logging
-telebot.logger.setLevel(logging.INFO)
 import json
 import os
 import re
@@ -16,6 +15,8 @@ import logging
 from datetime import datetime, timedelta
 from threading import Lock
 from typing import Optional, List, Tuple, Dict
+
+telebot.logger.setLevel(logging.DEBUG)  # или INFO
 
 # ========================================
 # КОНФИГУРАЦИЯ
