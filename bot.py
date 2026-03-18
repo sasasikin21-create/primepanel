@@ -3137,38 +3137,25 @@ def handle_callback(call):
 # ========================================
 def main():
     try:
-        init_keys_folder()
         init_database()
         refresh_key_files()
         init_admins_database()
 
-        logger.info("========================================")
         logger.info("✅ БОТ ГОТОВ К РАБОТЕ")
-        logger.info(f"🗄️ База данных: {DATABASE_FILE}")
-        logger.info(f"📁 Директория ключей: {KEYS_FOLDER}")
-        logger.info(f"👑 Супер-админы: {get_super_admins()}")
-        logger.info("========================================")
 
         bot.remove_webhook()
 
         while True:
             try:
                 logger.info("🔌 Подключаюсь к Telegram...")
-                bot.infinity_polling(
-                    timeout=15,
-                    long_polling_timeout=10,
-                    skip_pending=True,
-                    none_stop=True
-                )
+                bot.infinity_polling(timeout=15, long_polling_timeout=10, skip_pending=True)
             except Exception as e:
-                logger.critical(f"💥 БОТ ОТВАЛИЛСЯ: {type(e).__name__}: {e}")
-                logger.info("🔄 Перезапуск через 10 секунд...")
-                
+                logger.critical(f"❌ БОТ ОТВАЛИЛСЯ: {type(e).__name__}: {e}")
+                logger.info("🔁 Перезапуск через 10 секунд...")
                 try:
                     bot.stop_polling()
-                except:
+                except Exception:
                     pass
-
                 time.sleep(10)
 
     except KeyboardInterrupt:
@@ -3179,7 +3166,6 @@ def main():
         if db_connection:
             db_connection.close()
         logger.info("Соединение с БД закрыто")
-
 
 if __name__ == '__main__':
     main()
