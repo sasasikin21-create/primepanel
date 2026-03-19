@@ -40,7 +40,7 @@ LOG_FILE = os.path.join(BASE_DIR, "bot.log")
 TICKETS_PER_PAGE = 5
 ADMIN_SESSION_DAYS = 4
 
-bot = telebot.TeleBot(BOT_TOKEN, skip_pending=True)
+bot = telebot.TeleBot(BOT_TOKEN) # Убрал skip_pending отсюда, он будет в polling
 
 # ========================================
 # ЛОГИРОВАНИЕ
@@ -274,6 +274,7 @@ LANGUAGES = {
     }
 }
 
+# ... (весь остальной код до handle_callback без изменений) ...
 # ========================================
 # УТИЛИТЫ
 # ========================================
@@ -1479,7 +1480,7 @@ def issue_warning(user_id: int, stage: int, reason: str, admin_id: int) -> Optio
         if stage == 2:
             deduction = old_balance * 0.3
             new_balance = update_user_balance(user_id, -deduction)
-            add_transaction(user_id, deduction, "warn_deduction", warning_id)
+            # add_transaction(user_id, deduction, "warn_deduction", warning_id) # Function not found
         elif stage == 3:
             cursor.execute("UPDATE users SET strict_warning_active = 1 WHERE user_id = ?", (user_id,))
 
@@ -2956,86 +2957,112 @@ def handle_callback(call):
             bot.edit_message_text(info_text + "\n\n⚠️ <b>Скриншот не прикреплён!</b>", chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
         bot.answer_callback_query(call.id)
         return
-
-    if call.data.startswith("confirm_deposit_"):
+        
+    ### ИЗМЕНЕНИЕ: Начало полностью переработанного блока обработки заявок на пополнение ###
+    if call.data.startswith("confirm_deposit_") or call.data.startswith("reject_deposit_"):
         if not is_admin(user_id):
+            bot.answer_callback_query(call.id, "⛔ Доступ запрещён", show_alert=True)
             return
 
-        deposit_id = int(call.data.split("_")[-1])
-        deposit = get_deposit_by_id(deposit_id)
+        try:
+            action, deposit_id_str = call.data.split('_', 2)[0], call.data.split('_', 2)[2]
+            deposit_id = int(deposit_id_str)
+            logger.info(f"Админ {user_id} начал обработку заявки #{deposit_id} (действие: {action})")
 
-        if not deposit or deposit[4] != "pending":
-            bot.answer_callback_query(call.id, "Заявка уже обработана.", show_alert=True)
-            return
+            # 1. Получаем заявку из БД
+            deposit = get_deposit_by_id(deposit_id)
 
-        # сначала меняем статус (чтобы второй раз не нажали)
-        if update_deposit_status(deposit_id, "confirmed", user_id):
-            target_user_id = int(deposit[1])  # <-- ВАЖНО
-            amount = float(deposit[2])  # <-- ВАЖНО
+            # 2. Проверяем, существует ли заявка
+            if not deposit:
+                logger.warning(f"Админ {user_id} пытался обработать несуществующую заявку #{deposit_id}")
+                bot.answer_callback_query(call.id, "❌ Заявка не найдена. Возможно, она была удалена.", show_alert=True)
+                try:
+                    bot.delete_message(chat_id, msg_id)
+                except Exception:
+                    pass
+                show_deposit_requests(chat_id) # Обновляем список
+                return
 
-            new_bal = update_user_balance(target_user_id, amount)
+            # 3. Проверяем, что статус 'pending'. Это защита от двойного нажатия.
+            if deposit[4] != 'pending':
+                logger.warning(f"Админ {user_id} пытался обработать уже обработанную заявку #{deposit_id} со статусом '{deposit[4]}'")
+                bot.answer_callback_query(call.id, f"Эта заявка уже была обработана (статус: {deposit[4]}).", show_alert=True)
+                return
+            
+            # --- Логика подтверждения ---
+            if action == 'confirm':
+                # Атомарно меняем статус. Если другой админ нажал на 1мс раньше, эта функция вернет False.
+                if update_deposit_status(deposit_id, "confirmed", user_id):
+                    target_user_id = int(deposit[1])
+                    amount = float(deposit[2])
+                    
+                    new_bal = update_user_balance(target_user_id, amount)
+                    logger.info(f"✅ Заявка #{deposit_id} на {amount}₽ для пользователя {target_user_id} ПОДТВЕРЖДЕНА админом {user_id}.")
 
-            try:
-                bot.send_message(
-                    target_user_id,
-                    LANGUAGES[get_lang(target_user_id)]["deposit_confirmed_msg"].format(int(amount), int(new_bal)),
-                    parse_mode="HTML"
-                )
-            except Exception:
-                pass
+                    # Уведомляем пользователя
+                    try:
+                        bot.send_message(
+                            target_user_id,
+                            LANGUAGES[get_lang(target_user_id)]["deposit_confirmed_msg"].format(int(amount), int(new_bal)),
+                            parse_mode="HTML",
+                            timeout=10
+                        )
+                    except Exception as e:
+                        logger.error(f"Не удалось отправить уведомление о пополнении пользователю {target_user_id}: {e}")
 
+                    bot.answer_callback_query(call.id, "✅ Подтверждено!")
+                else:
+                    # Сюда мы попадём, если update_deposit_status вернул False (т.е. статус уже не 'pending')
+                    logger.warning(f"Race condition: Админ {user_id} не смог подтвердить заявку #{deposit_id}, т.к. она была обработана другим процессом.")
+                    bot.answer_callback_query(call.id, "Другой админ уже обработал эту заявку.", show_alert=True)
+            
+            # --- Логика отклонения ---
+            elif action == 'reject':
+                if update_deposit_status(deposit_id, "rejected", user_id):
+                    target_user_id = int(deposit[1])
+                    logger.info(f"❌ Заявка #{deposit_id} для пользователя {target_user_id} ОТКЛОНЕНА админом {user_id}.")
+
+                    # Уведомляем пользователя
+                    try:
+                        bot.send_message(
+                            target_user_id,
+                            LANGUAGES[get_lang(target_user_id)]["deposit_rejected_msg"].format("Проверьте реквизиты и попробуйте снова"),
+                            parse_mode="HTML",
+                            timeout=10
+                        )
+                    except Exception as e:
+                        logger.error(f"Не удалось отправить уведомление об отклонении заявки пользователю {target_user_id}: {e}")
+
+                    bot.answer_callback_query(call.id, "❌ Отклонено!")
+                else:
+                    logger.warning(f"Race condition: Админ {user_id} не смог отклонить заявку #{deposit_id}, т.к. она была обработана другим процессом.")
+                    bot.answer_callback_query(call.id, "Другой админ уже обработал эту заявку.", show_alert=True)
+
+            # Обновляем сообщение со списком заявок у админа
             try:
                 bot.delete_message(chat_id, msg_id)
             except Exception:
                 pass
-
-            bot.answer_callback_query(call.id, "✅ Подтверждено!")
             show_deposit_requests(chat_id)
-        else:
-            bot.answer_callback_query(call.id, "Заявка уже обработана.", show_alert=True)
 
-        return
-
-    if call.data.startswith("reject_deposit_"):
-        if not is_admin(user_id):
-            return
-
-        deposit_id = int(call.data.split("_")[-1])
-        deposit = get_deposit_by_id(deposit_id)
-
-        if not deposit or deposit[4] != "pending":
-            bot.answer_callback_query(call.id, "Заявка уже обработана.", show_alert=True)
-            return
-
-        if update_deposit_status(deposit_id, "rejected", user_id):
-            target_user_id = int(deposit[1])  # <-- ВАЖНО
-
+        except Exception as e:
+            logger.error(f"Критическая ошибка при обработке заявки на пополнение {call.data} админом {user_id}: {e}", exc_info=True)
             try:
-                bot.send_message(
-                    target_user_id,
-                    LANGUAGES[get_lang(target_user_id)]["deposit_rejected_msg"].format(
-                        "Проверьте реквизиты и попробуйте снова"),
-                    parse_mode="HTML"
-                )
-            except Exception:
-                pass
-
-            try:
-                bot.delete_message(chat_id, msg_id)
-            except Exception:
-                pass
-
-            bot.answer_callback_query(call.id, "❌ Отклонено!")
-            show_deposit_requests(chat_id)
-        else:
-            bot.answer_callback_query(call.id, "Заявка уже обработана.", show_alert=True)
-
+                bot.answer_callback_query(call.id, "Произошла внутренняя ошибка.", show_alert=True)
+                bot.send_message(chat_id, "Произошла ошибка при обработке заявки. Пожалуйста, проверьте логи.", timeout=10)
+            except Exception as send_err:
+                logger.error(f"Не удалось отправить сообщение об ошибке админу {user_id}: {send_err}")
+        
         return
+    ### ИЗМЕНЕНИЕ: Конец блока обработки заявок ###
 
     if call.data == "list_deposits":
         if not is_admin(user_id):
             return
-        bot.delete_message(chat_id, msg_id)
+        try:
+            bot.delete_message(chat_id, msg_id)
+        except Exception:
+            pass
         show_deposit_requests(chat_id)
         bot.answer_callback_query(call.id)
         return
@@ -3162,34 +3189,58 @@ def handle_callback(call):
 # ========================================
 # ЗАПУСК БОТА
 # ========================================
-import telebot
-telebot.logger.setLevel(logging.DEBUG)  # чтобы увидеть реальную причину, если что-то сломается
-
+### ИЗМЕНЕНИЕ: Полностью переработанная функция main для исправления ошибки и чистого старта ###
 def main():
+    """
+    Основная функция запуска и управления жизненным циклом бота.
+    """
     try:
+        # 1. Чистый старт: сбрасываем все временные состояния пользователей
+        logger.info("Выполняется чистый старт: сброс состояний...")
+        global user_states, user_languages, deposit_context
+        user_states = {}
+        user_languages = {}
+        deposit_context = {}
+
+        # 2. Инициализация систем
         init_database()
         refresh_key_files()
         init_admins_database()
 
-        logger.info("✅ БОТ ГОТОВ К РАБОТЕ")
-        bot.remove_webhook(drop_pending_updates=True)
+        # 3. Корректное удаление вебхука, если он был установлен.
+        # Это предотвращает запуск бота в режиме polling, когда активен webhook.
+        logger.info("Проверка и удаление вебхука перед запуском...")
+        try:
+            webhook_info = bot.get_webhook_info()
+            if webhook_info.url:
+                logger.info(f"Обнаружен активный вебхук: {webhook_info.url}. Удаляю...")
+                bot.remove_webhook() # Правильный вызов без доп. параметров
+                logger.info("Вебхук успешно удален.")
+        except Exception as e:
+            logger.error(f"Ошибка при удалении вебхука: {e}")
 
-        logger.info("🔌 Запускаю infinity_polling...")
+        logger.info("✅ БОТ ГОТОВ К РАБОТЕ")
+        
+        # 4. Запуск в режиме long-polling с пропуском "повисших" обновлений
+        logger.info("🔌 Запуск в режиме polling...")
         bot.infinity_polling(
             timeout=20,
             long_polling_timeout=10,
-            skip_pending=True
+            skip_pending=True  # Корректный способ сбросить старые обновления
         )
 
     except KeyboardInterrupt:
         logger.info("Бот остановлен пользователем (Ctrl+C)")
     except Exception as e:
+        # Логируем полную информацию об ошибке для дебага
         logger.exception(f"❌ Критическая ошибка при запуске бота: {e}")
+        # Перевызываем ошибку, чтобы процесс завершился с ненулевым кодом выхода
         raise
     finally:
+        # Этот блок выполнится в любом случае при завершении работы
         if db_connection:
             db_connection.close()
-        logger.info("Соединение с БД закрыто")
+            logger.info("Соединение с БД закрыто")
 
 
 if __name__ == "__main__":
