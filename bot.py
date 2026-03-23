@@ -3,19 +3,21 @@ import telebot
 from telebot import types
 
 import json
+import math
 import os
 import re
 import secrets
 import sqlite3
 import string
-from flask import Flask, request  # оставляю как у вас (на всякий случай)
+from flask import Flask, request
 import sys
 import time
 from datetime import datetime, timedelta
 from threading import Lock, Thread
 from typing import Optional, List, Tuple, Dict
+from io import BytesIO
 
-telebot.logger.setLevel(10)  # DEBUG=10
+telebot.logger.setLevel(10)
 
 # ========================================
 # КОНФИГУРАЦИЯ
@@ -30,7 +32,6 @@ PAYMENT_REQUISITES = """🟢 Сбербанк 🟢
 +79085545373
 Александр Валерьевич Ш."""
 
-# Требование: всё в /tmp + пути через os.path.join
 TMP_DIR = "/tmp"
 DATA_FILE = os.path.join(TMP_DIR, "users_data.json")
 DATABASE_FILE = os.path.join(TMP_DIR, "bot_database.db")
@@ -39,12 +40,13 @@ LOG_FILE = os.path.join(BASE_DIR, "bot.log")
 
 TICKETS_PER_PAGE = 5
 ADMIN_SESSION_DAYS = 4
+PURCHASES_PER_PAGE = 5
+USERS_PER_PAGE = 10
 
-# Новые переменные окружения
 STRICT_WARN_DAYS = int(os.getenv("STRICT_WARN_DAYS", "7"))
 SANCTIONS_CHECK_INTERVAL = int(os.getenv("SANCTIONS_CHECK_INTERVAL", "60"))
 
-bot = telebot.TeleBot(BOT_TOKEN)  # skip_pending будет в polling
+bot = telebot.TeleBot(BOT_TOKEN)
 
 # ========================================
 # ЛОГИРОВАНИЕ
@@ -104,12 +106,10 @@ PERIOD_DISPLAY = {
     "30d": "30 DAYS"
 }
 
-# Для интерактивного /addkey (порядок + отображение)
 ADDKEY_PRODUCT_ORDER = ["primehack", "zolo", "dexo"]
 ADDKEY_PRODUCT_LABELS = {"primehack": "PrimeHack", "zolo": "ZOLO", "dexo": "DEXO"}
 ADDKEY_ALLOWED_PERIODS = ["1d", "3d", "7d", "14d", "30d"]
 
-# KEY_FILES: "product_period" -> absolute path
 KEY_FILES: Dict[str, str] = {}
 
 WARNING_LEVELS = {
@@ -203,7 +203,31 @@ LANGUAGES = {
         "select_max_uses": "👥 <b>Выберите максимальное количество использований:</b>",
         "choose_product": "Выберите товар:",
         "choose_category": "Выберите категорию:",
-        "choose_subscription": "Выберите подписку:"
+        "choose_subscription": "Выберите подписку:",
+        # === НОВЫЕ ТЕКСТЫ ===
+        "my_purchases_title": "🛒 <b>Мои покупки</b>",
+        "total_spent": "💰 Итого потрачено: <b>{} ₽</b>",
+        "page_info": "📄 Стр. {}/{}",
+        "no_purchases": "📭 У вас пока нет покупок.",
+        "purchase_detail": "📦 <b>Покупка #{}</b>\n\n🔑 Ключ: <code>{}</code>\n📋 Товар: {}\n💲 Цена: {} ₽\n📅 Дата: {}",
+        "purchase_not_found": "❌ Позиция не найдена.",
+        "btn_prev": "◀️ Назад",
+        "btn_next": "Вперёд ▶️",
+        "btn_search_key": "🔍 Поиск по ключу",
+        "btn_download_txt": "📥 Скачать .txt",
+        "btn_refresh_list": "🔄 Обновить",
+        "btn_to_catalog": "📖 В каталог",
+        "enter_search_key": "🔍 <b>Введите ключ (или часть ключа) для поиска:</b>\n\nДля отмены: /cancel",
+        "search_results": "🔍 <b>Результаты поиска:</b>\n\n",
+        "search_empty": "🔍 Ничего не найдено.",
+        "admin_users_title": "👥 <b>Пользователи ({})</b>",
+        "admin_user_profile": "👤 <b>Профиль пользователя</b>\n\nℹ️ Авторизован в панель — {}\n💳 Баланс: <b>{} ₽</b>",
+        "btn_user_purchases": "🛍 Список покупок",
+        "btn_user_punishments": "❌ Список наказаний",
+        "punishments_title": "❌ <b>Список наказаний</b>\n\n",
+        "no_punishments": "✅ Наказаний не обнаружено.",
+        "btn_users": "👥 Пользователи",
+        "shopping_list_btn": "📚 Список покупок",
     },
     "en": {
         "welcome": "👋 Hello! Choose section:",
@@ -279,7 +303,31 @@ LANGUAGES = {
         "select_max_uses": "👥 <b>Select maximum number of uses:</b>",
         "choose_product": "Choose product:",
         "choose_category": "Choose category:",
-        "choose_subscription": "Choose subscription:"
+        "choose_subscription": "Choose subscription:",
+        # === NEW TEXTS ===
+        "my_purchases_title": "🛒 <b>My Purchases</b>",
+        "total_spent": "💰 Total spent: <b>${}</b>",
+        "page_info": "📄 Page {}/{}",
+        "no_purchases": "📭 You have no purchases yet.",
+        "purchase_detail": "📦 <b>Purchase #{}</b>\n\n🔑 Key: <code>{}</code>\n📋 Item: {}\n💲 Price: {} ₽\n📅 Date: {}",
+        "purchase_not_found": "❌ Item not found.",
+        "btn_prev": "◀️ Prev",
+        "btn_next": "Next ▶️",
+        "btn_search_key": "🔍 Search by key",
+        "btn_download_txt": "📥 Download .txt",
+        "btn_refresh_list": "🔄 Refresh",
+        "btn_to_catalog": "📖 To catalog",
+        "enter_search_key": "🔍 <b>Enter key (or part of key) to search:</b>\n\nTo cancel: /cancel",
+        "search_results": "🔍 <b>Search results:</b>\n\n",
+        "search_empty": "🔍 Nothing found.",
+        "admin_users_title": "👥 <b>Users ({})</b>",
+        "admin_user_profile": "👤 <b>User Profile</b>\n\nℹ️ Authorized at — {}\n💳 Balance: <b>${}</b>",
+        "btn_user_purchases": "🛍 Shopping List",
+        "btn_user_punishments": "❌ Punishments List",
+        "punishments_title": "❌ <b>Punishments list</b>\n\n",
+        "no_punishments": "✅ No punishments found.",
+        "btn_users": "👥 Users",
+        "shopping_list_btn": "📚 Shopping List",
     }
 }
 
@@ -287,7 +335,6 @@ LANGUAGES = {
 # УТИЛИТЫ
 # ========================================
 def safe_text(value) -> str:
-    """Защита текста от .format() и вставки в HTML-строки."""
     return str(value).replace("{", "{{").replace("}", "}}")
 
 
@@ -483,13 +530,21 @@ def init_database():
                 FOREIGN KEY (password_id) REFERENCES access_passwords(id) ON DELETE CASCADE,
                 FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
             )""",
-            # NEW: strict sanctions
             """CREATE TABLE IF NOT EXISTS strict_sanctions (
                 user_id INTEGER PRIMARY KEY,
                 until_ts INTEGER NOT NULL,
                 restore_access INTEGER NOT NULL DEFAULT 0,
                 granted_by INTEGER,
                 created_ts INTEGER NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
+            )""",
+            # === НОВАЯ ТАБЛИЦА: НАКАЗАНИЯ ===
+            """CREATE TABLE IF NOT EXISTS punishments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                punishment_type TEXT NOT NULL,
+                description TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
             )"""
         ]
@@ -507,6 +562,7 @@ def init_database():
             "CREATE INDEX IF NOT EXISTS idx_password_uses_user_id ON password_uses(user_id)",
             "CREATE INDEX IF NOT EXISTS idx_password_uses_password_id ON password_uses(password_id)",
             "CREATE INDEX IF NOT EXISTS idx_strict_sanctions_until ON strict_sanctions(until_ts)",
+            "CREATE INDEX IF NOT EXISTS idx_punishments_user_id ON punishments(user_id)",
         ]
         for sql in indexes:
             cursor.execute(sql)
@@ -531,7 +587,6 @@ def sync_user_to_json_from_db(user_id: int):
         row = raw_get_user_row(user_id)
         if not row:
             return
-
         data = load_users_data()
         uid = str(user_id)
         existing = data.get(uid, {})
@@ -552,7 +607,6 @@ def sync_all_users_json_from_db():
         cursor = conn.cursor()
         cursor.execute("SELECT user_id, username, first_name, last_name, balance, created_at FROM users")
         rows = cursor.fetchall()
-
         data = load_users_data()
         for row in rows:
             uid = str(row[0])
@@ -569,10 +623,6 @@ def sync_all_users_json_from_db():
 
 
 def restore_state_from_storage():
-    """
-    Если БД пустая/частично пустая — подтягиваем пользователей из JSON.
-    После этого пересобираем JSON как резервную копию из БД.
-    """
     with storage_lock:
         json_data = load_users_data()
         if json_data:
@@ -582,24 +632,20 @@ def restore_state_from_storage():
                 if not str(uid_str).isdigit():
                     continue
                 user_id = int(uid_str)
-
                 cursor.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
                 exists = cursor.fetchone() is not None
                 if exists:
                     continue
-
                 balance = float(info.get("balance", 0.0) or 0.0)
                 username = info.get("username")
                 first_name = info.get("first_name")
                 last_name = info.get("last_name")
                 created_at = info.get("created_at") or datetime.now().isoformat()
-
                 cursor.execute("""
                     INSERT INTO users (user_id, username, first_name, last_name, balance, created_at)
                     VALUES (?, ?, ?, ?, ?, ?)
                 """, (user_id, username, first_name, last_name, balance, created_at))
             conn.commit()
-
         sync_all_users_json_from_db()
 
 
@@ -643,10 +689,8 @@ def get_user_from_db(user_id: int) -> Optional[Tuple]:
 def update_user_info(user_id: int, first_name: str, last_name: str, username: str) -> bool:
     conn = get_db_connection()
     cursor = conn.cursor()
-
     existing = raw_get_user_row(user_id)
     existed_before = existing is not None
-
     balance = float(existing[4] if existing else 0.0)
     strict_warning_active = int(existing[5] if existing else 0)
     created_at = existing[6] if existing and len(existing) > 6 else datetime.now().isoformat()
@@ -655,11 +699,8 @@ def update_user_info(user_id: int, first_name: str, last_name: str, username: st
         INSERT OR IGNORE INTO users (user_id, username, first_name, last_name, balance, strict_warning_active, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
     """, (user_id, username, first_name, last_name, balance, strict_warning_active, created_at))
-
     cursor.execute("""
-        UPDATE users
-        SET username = ?, first_name = ?, last_name = ?
-        WHERE user_id = ?
+        UPDATE users SET username = ?, first_name = ?, last_name = ? WHERE user_id = ?
     """, (username, first_name, last_name, user_id))
     conn.commit()
 
@@ -668,12 +709,8 @@ def update_user_info(user_id: int, first_name: str, last_name: str, username: st
         uid = str(user_id)
         if uid not in data:
             data[uid] = {
-                "balance": balance,
-                "username": username,
-                "first_name": first_name,
-                "last_name": last_name,
-                "purchases": [],
-                "created_at": created_at
+                "balance": balance, "username": username, "first_name": first_name,
+                "last_name": last_name, "purchases": [], "created_at": created_at
             }
         else:
             data[uid]["username"] = username
@@ -687,7 +724,6 @@ def update_user_info(user_id: int, first_name: str, last_name: str, username: st
     if not existed_before:
         log_new_user(user_id, first_name, last_name, username)
         notify_admins_about_new_user(user_id, first_name, last_name, username)
-
     return True
 
 
@@ -695,15 +731,8 @@ def update_user_info(user_id: int, first_name: str, last_name: str, username: st
 def update_user_balance_db(user_id: int, new_balance: float) -> bool:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        INSERT OR IGNORE INTO users (user_id, balance)
-        VALUES (?, 0.0)
-    """, (user_id,))
-    cursor.execute("""
-        UPDATE users
-        SET balance = ?
-        WHERE user_id = ?
-    """, (new_balance, user_id))
+    cursor.execute("INSERT OR IGNORE INTO users (user_id, balance) VALUES (?, 0.0)", (user_id,))
+    cursor.execute("UPDATE users SET balance = ? WHERE user_id = ?", (new_balance, user_id))
     conn.commit()
     return True
 
@@ -729,15 +758,9 @@ def revoke_user_access(user_id: int) -> bool:
 def grant_user_access(user_id: int, granted_by: int) -> bool:
     conn = get_db_connection()
     cursor = conn.cursor()
-
-    # ensure foreign-key users exist
     get_user_from_db(user_id)
     get_user_from_db(granted_by)
-
-    cursor.execute("""
-        INSERT OR REPLACE INTO access_grants (user_id, granted_by)
-        VALUES (?, ?)
-    """, (user_id, granted_by))
+    cursor.execute("INSERT OR REPLACE INTO access_grants (user_id, granted_by) VALUES (?, ?)", (user_id, granted_by))
     conn.commit()
     return True
 
@@ -746,13 +769,10 @@ def grant_user_access(user_id: int, granted_by: int) -> bool:
 def get_authorized_users() -> List[int]:
     conn = get_db_connection()
     cursor = conn.cursor()
-
     cursor.execute("SELECT DISTINCT user_id FROM access_grants")
     granted_users = [row[0] for row in cursor.fetchall()]
-
     cursor.execute("SELECT user_id FROM admins")
     admins = [row[0] for row in cursor.fetchall()]
-
     return list(set(granted_users + admins))
 
 
@@ -764,16 +784,39 @@ def get_all_users() -> List[int]:
     return [row[0] for row in cursor.fetchall()]
 
 
+# === НОВОЕ: получить пользователей с пагинацией для админ-панели ===
+@safe_db_operation
+def get_all_users_paginated(page: int = 1, per_page: int = USERS_PER_PAGE) -> List[Tuple]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    offset = (page - 1) * per_page
+    cursor.execute("""
+        SELECT u.user_id, u.username, u.first_name, u.last_name, u.balance, u.created_at
+        FROM users u
+        INNER JOIN access_grants ag ON u.user_id = ag.user_id
+        ORDER BY ag.granted_at DESC
+        LIMIT ? OFFSET ?
+    """, (per_page, offset))
+    return cursor.fetchall()
+
+
+@safe_db_operation
+def get_authorized_users_count() -> int:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM access_grants")
+    result = cursor.fetchone()
+    return result[0] if result else 0
+
+
 @safe_db_operation
 def get_user_by_username_or_id(identifier: str) -> Optional[Tuple]:
     conn = get_db_connection()
     cursor = conn.cursor()
-
     if identifier.lstrip("@").isdigit():
         user_id = int(identifier.lstrip("@"))
         cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
         return cursor.fetchone()
-
     username = identifier.lstrip("@")
     cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
     return cursor.fetchone()
@@ -850,10 +893,7 @@ def create_admin_session(user_id: int):
     conn = get_db_connection()
     cursor = conn.cursor()
     expires_at = datetime.now() + timedelta(days=ADMIN_SESSION_DAYS)
-    cursor.execute("""
-        INSERT OR REPLACE INTO admin_sessions (user_id, expires_at)
-        VALUES (?, ?)
-    """, (user_id, expires_at.isoformat()))
+    cursor.execute("INSERT OR REPLACE INTO admin_sessions (user_id, expires_at) VALUES (?, ?)", (user_id, expires_at.isoformat()))
     conn.commit()
 
 
@@ -870,10 +910,7 @@ def load_admin_password() -> str:
 def save_admin_password(password: str):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        INSERT OR REPLACE INTO system_settings (key, value)
-        VALUES ('admin_password', ?)
-    """, (password,))
+    cursor.execute("INSERT OR REPLACE INTO system_settings (key, value) VALUES ('admin_password', ?)", (password,))
     conn.commit()
 
 
@@ -887,7 +924,6 @@ def init_admins_database():
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM admins WHERE role = 'super'")
     count = cursor.fetchone()[0]
-
     if count == 0:
         env_owner = os.getenv("SUPERADMIN_ID") or os.getenv("SUPER_ADMIN_ID")
         if env_owner and str(env_owner).isdigit():
@@ -895,7 +931,6 @@ def init_admins_database():
             add_to_admin("super", owner_id)
             logger.info(f"✅ Супер-Админ установлен из переменной окружения: {owner_id}")
             return
-
         if sys.stdin.isatty():
             print("\n" + "=" * 60)
             print("⚠️ Первый запуск! Нужно установить Супер-Админа")
@@ -906,18 +941,15 @@ def init_admins_database():
                     add_to_admin("super", owner_id)
                     print(f"✅ Супер-Админ установлен: {owner_id}")
                 else:
-                    print("❌ ID должен быть числом. Супер-админ не установлен.")
+                    print("❌ ID должен быть числом.")
             except Exception as e:
                 print(f"❌ Ошибка ввода ID: {e}")
         else:
-            logger.warning(
-                "⚠️ Супер-админ не установлен. "
-                "Задайте SUPERADMIN_ID в переменных окружения или добавьте запись вручную в БД."
-            )
+            logger.warning("⚠️ Супер-админ не установлен. Задайте SUPERADMIN_ID в env.")
 
 
 # ========================================
-# STRICT SANCTIONS (stage=3 hard block)
+# STRICT SANCTIONS
 # ========================================
 @safe_db_operation
 def get_strict_sanction(user_id: int) -> Optional[Tuple]:
@@ -933,29 +965,23 @@ def strict_block_message(until_ts: int) -> str:
 
 
 def is_user_strict_blocked(user_id: int) -> Tuple[bool, Optional[int]]:
-    # админов/супер-админов не баним
     if is_admin(user_id) or is_super_admin(user_id):
         return False, None
-
     row = get_strict_sanction(user_id)
     if not row:
         return False, None
-
     until_ts = int(row[1])
     now_ts = int(time.time())
     if now_ts >= until_ts:
-        # истекло - пусть воркер снимет, но и тут можно попытаться
         try:
             process_single_expired_sanction(user_id)
         except Exception:
             pass
         return False, None
-
     return True, until_ts
 
 
 def check_strict_block_and_notify_message(message) -> bool:
-    """True если заблокирован и мы уже уведомили пользователя."""
     user_id = message.from_user.id
     blocked, until_ts = is_user_strict_blocked(user_id)
     if not blocked:
@@ -980,70 +1006,47 @@ def check_strict_block_and_notify_callback(call) -> bool:
 
 
 def apply_strict_sanction(user_id: int, admin_id: int):
-    """
-    При stage=3:
-    - блокируем пользователя до now + STRICT_WARN_DAYS
-    - удаляем access_grants
-    - запоминаем restore_access (был ли доступ до наказания)
-    """
-    # админов не баним
     if is_admin(user_id) or is_super_admin(user_id):
         return
-
     conn = get_db_connection()
     cursor = conn.cursor()
-
     get_user_from_db(user_id)
     get_user_from_db(admin_id)
-
     had_access = bool(is_user_access_granted(user_id))
     if had_access:
         revoke_user_access(user_id)
-
     until_ts = int(time.time() + STRICT_WARN_DAYS * 86400)
     created_ts = int(time.time())
     restore_access = 1 if had_access else 0
-
     cursor.execute("""
         INSERT OR REPLACE INTO strict_sanctions (user_id, until_ts, restore_access, granted_by, created_ts)
         VALUES (?, ?, ?, ?, ?)
     """, (user_id, until_ts, restore_access, admin_id, created_ts))
     conn.commit()
 
+    # === НОВОЕ: записываем наказание в таблицу punishments ===
+    add_punishment(user_id, "Строгий выговор", f"Блокировка до {datetime.fromtimestamp(until_ts).strftime('%d.%m.%Y %H:%M')}. Выдал: {admin_id}")
+
 
 def process_single_expired_sanction(user_id: int):
-    """
-    Снять strict_sanction если истёк:
-    - деактивировать stage=3 warnings
-    - снять users.strict_warning_active
-    - удалить strict_sanctions
-    - восстановить доступ если restore_access=1
-    """
     row = get_strict_sanction(user_id)
     if not row:
         return
-
     until_ts = int(row[1])
     restore_access = int(row[2] or 0)
     granted_by = row[3]
-
     now_ts = int(time.time())
     if now_ts < until_ts:
         return
-
     conn = get_db_connection()
     cursor = conn.cursor()
-
     cursor.execute("UPDATE warnings SET is_active = 0 WHERE user_id = ? AND stage = 3 AND is_active = 1", (user_id,))
     cursor.execute("UPDATE users SET strict_warning_active = 0 WHERE user_id = ?", (user_id,))
     cursor.execute("DELETE FROM strict_sanctions WHERE user_id = ?", (user_id,))
-
     if restore_access == 1:
         who = int(granted_by) if granted_by else user_id
         grant_user_access(user_id, who)
-
     conn.commit()
-
     try:
         bot.send_message(user_id, "✅ Строгий выговор снят автоматически. Доступ к боту восстановлен.")
     except Exception:
@@ -1069,7 +1072,93 @@ def sanctions_worker():
 
 
 # ========================================
-# СВЯЗЬ С ACCESS PASSWORDS
+# НАКАЗАНИЯ (НОВОЕ)
+# ========================================
+@safe_db_operation
+def add_punishment(user_id: int, punishment_type: str, description: str = "") -> bool:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO punishments (user_id, punishment_type, description)
+        VALUES (?, ?, ?)
+    """, (user_id, punishment_type, description))
+    conn.commit()
+    return True
+
+
+@safe_db_operation
+def get_user_punishments(user_id: int) -> List[Tuple]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT punishment_type, description, created_at
+        FROM punishments
+        WHERE user_id = ?
+        ORDER BY created_at DESC
+    """, (user_id,))
+    return cursor.fetchall()
+
+
+# ========================================
+# ПОКУПКИ ИЗ JSON (НОВОЕ — пагинация + поиск)
+# ========================================
+def get_user_purchases_from_json(user_id: int) -> List[dict]:
+    """Получить все покупки пользователя из JSON."""
+    with storage_lock:
+        data = load_users_data()
+        uid = str(user_id)
+        if uid not in data:
+            return []
+        return data[uid].get("purchases", [])
+
+
+def get_user_purchases_paginated(user_id: int, page: int = 1, per_page: int = PURCHASES_PER_PAGE) -> Tuple[List[dict], int, int, float]:
+    """Возвращает (список покупок на странице, всего покупок, всего страниц, сумма)."""
+    all_purchases = get_user_purchases_from_json(user_id)
+    total_count = len(all_purchases)
+    total_pages = max(1, math.ceil(total_count / per_page))
+    page = max(1, min(page, total_pages))
+    offset = (page - 1) * per_page
+    page_items = all_purchases[offset:offset + per_page]
+    total_spent = sum(float(p.get("price", 0)) for p in all_purchases)
+    return page_items, total_count, total_pages, total_spent
+
+
+def search_user_purchases(user_id: int, query: str) -> List[dict]:
+    """Поиск покупок по ключу."""
+    all_purchases = get_user_purchases_from_json(user_id)
+    query_lower = query.lower().strip()
+    results = []
+    for p in all_purchases:
+        key = (p.get("key") or "").lower()
+        if query_lower in key:
+            results.append(p)
+    return results[:20]
+
+
+def generate_purchases_txt(user_id: int, lang: str) -> bytes:
+    """Генерация .txt файла со списком покупок."""
+    all_purchases = get_user_purchases_from_json(user_id)
+    total_spent = sum(float(p.get("price", 0)) for p in all_purchases)
+    lines = []
+    if lang == "ru":
+        lines.append("Мои покупки")
+        lines.append(f"Итого потрачено: {format_balance(total_spent)} ₽")
+    else:
+        lines.append("My Purchases")
+        lines.append(f"Total spent: {format_balance(total_spent)}")
+    lines.append("")
+    for idx, p in enumerate(all_purchases, 1):
+        key = p.get("key", "—")
+        product = p.get("product", "—")
+        price = p.get("price", 0)
+        date = format_timestamp(p.get("date"))
+        lines.append(f"{idx}. {key} | {product} | {price} | {date}")
+    return "\n".join(lines).encode("utf-8")
+
+
+# ========================================
+# ACCESS PASSWORDS
 # ========================================
 @safe_db_operation
 def check_access_password(password_text: str) -> Optional[Tuple]:
@@ -1087,15 +1176,8 @@ def check_access_password(password_text: str) -> Optional[Tuple]:
 def use_access_password(password_id: int, user_id: int) -> bool:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        UPDATE access_passwords
-        SET current_uses = current_uses + 1
-        WHERE id = ?
-    """, (password_id,))
-    cursor.execute("""
-        INSERT INTO password_uses (password_id, user_id)
-        VALUES (?, ?)
-    """, (password_id, user_id))
+    cursor.execute("UPDATE access_passwords SET current_uses = current_uses + 1 WHERE id = ?", (password_id,))
+    cursor.execute("INSERT INTO password_uses (password_id, user_id) VALUES (?, ?)", (password_id, user_id))
     conn.commit()
     return True
 
@@ -1119,7 +1201,6 @@ def generate_access_password(pass_type: str, max_uses: int, admin_id: int) -> Op
         max_uses = 1
     if pass_type == "single":
         max_uses = 1
-
     for _ in range(20):
         password = generate_password(16)
         if create_access_password(password, pass_type, max_uses, admin_id):
@@ -1131,59 +1212,34 @@ def check_and_use_password(password_text: str, user_id: int) -> bool:
     password_text = (password_text or "").strip()
     if not password_text:
         return False
-
     with db_lock:
         conn = get_db_connection()
         cursor = conn.cursor()
         try:
             cursor.execute("BEGIN IMMEDIATE")
-
             cursor.execute("""
                 SELECT id, type, max_uses, current_uses, is_active
-                FROM access_passwords
-                WHERE password = ?
+                FROM access_passwords WHERE password = ?
             """, (password_text,))
             row = cursor.fetchone()
-
             if not row:
                 conn.rollback()
                 return False
-
             password_id, pass_type, max_uses, current_uses, is_active = row
             if not is_active or current_uses >= max_uses:
                 conn.rollback()
                 return False
-
-            # ensure user exists in users
             cursor.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
             if cursor.fetchone() is None:
-                cursor.execute("""
-                    INSERT INTO users (user_id, username, first_name, last_name, balance)
-                    VALUES (?, NULL, NULL, NULL, 0.0)
-                """, (user_id,))
-
-            cursor.execute("""
-                INSERT OR IGNORE INTO access_grants (user_id, granted_by)
-                VALUES (?, ?)
-            """, (user_id, user_id))
-
-            cursor.execute("""
-                INSERT INTO password_uses (password_id, user_id)
-                VALUES (?, ?)
-            """, (password_id, user_id))
-
+                cursor.execute("INSERT INTO users (user_id, username, first_name, last_name, balance) VALUES (?, NULL, NULL, NULL, 0.0)", (user_id,))
+            cursor.execute("INSERT OR IGNORE INTO access_grants (user_id, granted_by) VALUES (?, ?)", (user_id, user_id))
+            cursor.execute("INSERT INTO password_uses (password_id, user_id) VALUES (?, ?)", (password_id, user_id))
             new_uses = current_uses + 1
             new_active = 0 if new_uses >= max_uses else 1
-            cursor.execute("""
-                UPDATE access_passwords
-                SET current_uses = ?, is_active = ?
-                WHERE id = ?
-            """, (new_uses, new_active, password_id))
-
+            cursor.execute("UPDATE access_passwords SET current_uses = ?, is_active = ? WHERE id = ?", (new_uses, new_active, password_id))
             conn.commit()
             sync_user_to_json_from_db(user_id)
             return True
-
         except sqlite3.Error as e:
             conn.rollback()
             logger.error(f"Ошибка при использовании access-password: {e}")
@@ -1194,7 +1250,6 @@ def handle_login(message):
     user_id = message.from_user.id
     password_text = (message.text or "").strip()
     result = check_and_use_password(password_text, user_id)
-
     if result:
         clear_user_state(user_id)
         bot.send_message(message.chat.id, LANGUAGES[get_lang(user_id)]["password_used_success"])
@@ -1230,11 +1285,9 @@ def get_user_data(user_id: int) -> dict:
         if not db_user:
             get_user_from_db(user_id)
             db_user = raw_get_user_row(user_id)
-
         data = load_users_data()
         uid = str(user_id)
         existing = data.get(uid, {})
-
         data[uid] = {
             "balance": float(db_user[4] if db_user else existing.get("balance", 0.0) or 0.0),
             "username": db_user[1] if db_user else existing.get("username"),
@@ -1251,17 +1304,13 @@ def update_user_balance(user_id: int, amount: float) -> float:
     with storage_lock:
         data = load_users_data()
         uid = str(user_id)
-
         if uid not in data:
             get_user_data(user_id)
             data = load_users_data()
-
         if "balance" not in data[uid] or not isinstance(data[uid]["balance"], (int, float)):
             data[uid]["balance"] = 0.0
-
         data[uid]["balance"] = round(float(data[uid]["balance"]) + float(amount), 2)
         save_users_data(data)
-
     update_user_balance_db(user_id, data[str(user_id)]["balance"])
     sync_user_to_json_from_db(user_id)
     return data[str(user_id)]["balance"]
@@ -1273,18 +1322,11 @@ def add_purchase_record(user_id: int, product: str, price: float, key: str):
         uid = str(user_id)
         if uid not in data:
             data[uid] = {
-                "balance": 0.0,
-                "username": None,
-                "first_name": None,
-                "last_name": None,
-                "purchases": [],
-                "created_at": datetime.now().isoformat()
+                "balance": 0.0, "username": None, "first_name": None,
+                "last_name": None, "purchases": [], "created_at": datetime.now().isoformat()
             }
         data[uid].setdefault("purchases", []).append({
-            "product": product,
-            "price": price,
-            "key": key,
-            "date": datetime.now().isoformat()
+            "product": product, "price": price, "key": key, "date": datetime.now().isoformat()
         })
         save_users_data(data)
 
@@ -1297,25 +1339,20 @@ def resolve_key_file(product_key: str, period: str) -> str:
     path = KEY_FILES.get(key)
     if path and os.path.exists(path):
         return path
-
     filename = f"keys_{product_key}_{period}.txt"
     path = os.path.join(KEYS_FOLDER, filename)
     KEY_FILES[key] = path
-
     if not os.path.exists(path):
         os.makedirs(KEYS_FOLDER, exist_ok=True)
         open(path, "a", encoding="utf-8").close()
-
     return path
 
 
 def migrate_legacy_primehack_keys(period: str):
     legacy_path = os.path.join(KEYS_FOLDER, f"keys_{period}.txt")
     new_path = os.path.join(KEYS_FOLDER, f"keys_primehack_{period}.txt")
-
     if not os.path.exists(legacy_path):
         return
-
     legacy_keys = []
     try:
         with open(legacy_path, "r", encoding="utf-8") as f:
@@ -1323,27 +1360,22 @@ def migrate_legacy_primehack_keys(period: str):
     except IOError as e:
         logger.error(f"Ошибка чтения legacy-файла {legacy_path}: {e}")
         return
-
     if not legacy_keys:
         return
-
     os.makedirs(KEYS_FOLDER, exist_ok=True)
     if not os.path.exists(new_path):
         open(new_path, "a", encoding="utf-8").close()
-
     try:
         with open(new_path, "r", encoding="utf-8") as f:
             current_keys = {line.strip() for line in f if line.strip()}
     except IOError:
         current_keys = set()
-
     merged = list(current_keys)
     changed = False
     for k in legacy_keys:
         if k not in current_keys:
             merged.append(k)
             changed = True
-
     if changed:
         with open(new_path, "w", encoding="utf-8") as f:
             f.write("\n".join(merged) + "\n")
@@ -1351,13 +1383,8 @@ def migrate_legacy_primehack_keys(period: str):
 
 
 def refresh_key_files():
-    """
-    Сканирует папку keys/, создаёт недостающие файлы для всех товаров и периодов,
-    обновляет KEY_FILES.
-    """
     global KEY_FILES
     os.makedirs(KEYS_FOLDER, exist_ok=True)
-
     updated = {}
     for product_key, info in PRODUCTS.items():
         for period in info["prices"].keys():
@@ -1366,20 +1393,14 @@ def refresh_key_files():
             if not os.path.exists(path):
                 open(path, "a", encoding="utf-8").close()
             updated[f"{product_key}_{period}"] = path
-
-            # legacy migration support for primehack/period.txt
             if product_key == "primehack":
                 migrate_legacy_primehack_keys(period)
-
     KEY_FILES = updated
     logger.info(f"✅ KEY_FILES обновлён. Файлов: {len(KEY_FILES)}")
     return KEY_FILES
 
 
 def get_keys_count(product_key: str, period: str) -> int:
-    """
-    Возвращает количество ключей в файле для товара и периода.
-    """
     with key_lock:
         path = resolve_key_file(product_key, period)
         if not os.path.exists(path):
@@ -1393,39 +1414,27 @@ def get_keys_count(product_key: str, period: str) -> int:
 
 
 def get_available_keys(product_key: str, period: str, quantity: int) -> List[str]:
-    """
-    Читает quantity ключей из файла, удаляет их из файла, возвращает список.
-    """
     if quantity <= 0:
         return []
-
     with key_lock:
         path = resolve_key_file(product_key, period)
         try:
             with open(path, "r", encoding="utf-8") as f:
                 lines = [line.strip() for line in f if line.strip()]
-
             if len(lines) < quantity:
                 return []
-
             taken = lines[:quantity]
             remaining = lines[quantity:]
-
             with open(path, "w", encoding="utf-8") as f:
                 if remaining:
                     f.write("\n".join(remaining) + "\n")
-
             return taken
-
         except IOError as e:
             logger.error(f"Ошибка работы с файлом ключей {path}: {e}")
             return []
 
 
 def get_multiple_keys_from_file(product_key: str, period: str, quantity: int) -> List[str]:
-    """
-    Backward-compatible alias.
-    """
     return get_available_keys(product_key, period, quantity)
 
 
@@ -1442,7 +1451,6 @@ def add_key_to_file(product_key: str, period: str, key: str) -> bool:
 
 
 def add_keys_bulk_to_file(product_key: str, period: str, keys: List[str]) -> int:
-    """Массовое добавление ключей. Возвращает сколько добавлено (уникальные, непустые)."""
     if not keys:
         return 0
     cleaned = []
@@ -1514,7 +1522,6 @@ def notify_admins_about_purchase(user_id: int, product_name: str, quantity: int,
         user_display = user_db[2]
     else:
         user_display = f"ID {user_id}"
-
     keys_text = "\n".join(f"• {key}" for key in keys)
     notification_text = (
         f"🔔 Уведомление об заказе пользователя {user_display}\n"
@@ -1524,7 +1531,6 @@ def notify_admins_about_purchase(user_id: int, product_name: str, quantity: int,
         f"📦 Кол-во: {quantity}\n"
         f"🔐 Ключи:\n{keys_text}"
     )
-
     for admin_id in get_all_admins():
         try:
             bot.send_message(admin_id, notification_text, parse_mode="HTML")
@@ -1538,7 +1544,6 @@ def notify_admins_about_warning(user_id: int, stage: int, reason: str, admin_id:
     admin_db = get_user_from_db(admin_id)
     admin_username = f"@{admin_db[1]}" if admin_db and admin_db[1] else f"ID {admin_id}"
     stage_name = WARNING_LEVELS[stage][0] if stage in WARNING_LEVELS else str(stage)
-
     notification_text = (
         f"🚨 ВЫДАНО ПРЕДУПРЕЖДЕНИЕ\n\n"
         f"Пользователь: {target_username}\n"
@@ -1547,7 +1552,6 @@ def notify_admins_about_warning(user_id: int, stage: int, reason: str, admin_id:
         f"Выдал: {admin_username}\n"
         f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
     )
-
     for admin_id_notify in get_all_admins():
         try:
             bot.send_message(admin_id_notify, notification_text, parse_mode="HTML")
@@ -1572,10 +1576,7 @@ def send_balance_notification(target_user_id: int, amount: float, new_balance: f
 def create_ticket(user_id: int, message: str) -> int:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO tickets (user_id, message, status)
-        VALUES (?, ?, ?)
-    """, (user_id, message, "open"))
+    cursor.execute("INSERT INTO tickets (user_id, message, status) VALUES (?, ?, ?)", (user_id, message, "open"))
     conn.commit()
     return cursor.lastrowid
 
@@ -1614,11 +1615,7 @@ def get_open_tickets_paginated(page: int = 0) -> List[Tuple]:
 def update_ticket_status(ticket_id: int, new_status: str):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        UPDATE tickets
-        SET status = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-    """, (new_status, ticket_id))
+    cursor.execute("UPDATE tickets SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (new_status, ticket_id))
     conn.commit()
 
 
@@ -1626,11 +1623,7 @@ def update_ticket_status(ticket_id: int, new_status: str):
 def add_admin_response_to_ticket(ticket_id: int, admin_response_text: str):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        UPDATE tickets
-        SET admin_response = ?, status = 'answered', updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-    """, (admin_response_text, ticket_id))
+    cursor.execute("UPDATE tickets SET admin_response = ?, status = 'answered', updated_at = CURRENT_TIMESTAMP WHERE id = ?", (admin_response_text, ticket_id))
     conn.commit()
 
 
@@ -1638,10 +1631,7 @@ def add_admin_response_to_ticket(ticket_id: int, admin_response_text: str):
 def add_ticket_attachment(ticket_id: int, file_id: str, file_type: str) -> bool:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO ticket_attachments (ticket_id, file_id, file_type)
-        VALUES (?, ?, ?)
-    """, (ticket_id, file_id, file_type))
+    cursor.execute("INSERT INTO ticket_attachments (ticket_id, file_id, file_type) VALUES (?, ?, ?)", (ticket_id, file_id, file_type))
     conn.commit()
     return True
 
@@ -1658,10 +1648,7 @@ def get_ticket_attachments(ticket_id: int) -> List[Tuple]:
 def get_user_tickets(user_id: int) -> List[Tuple]:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        SELECT id, message, status, created_at FROM tickets
-        WHERE user_id = ? ORDER BY created_at DESC
-    """, (user_id,))
+    cursor.execute("SELECT id, message, status, created_at FROM tickets WHERE user_id = ? ORDER BY created_at DESC", (user_id,))
     return cursor.fetchall()
 
 
@@ -1672,22 +1659,22 @@ def issue_warning(user_id: int, stage: int, reason: str, admin_id: int) -> Optio
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        cursor.execute("""
-            INSERT INTO warnings (user_id, stage, reason, admin_id, is_active)
-            VALUES (?, ?, ?, ?, 1)
-        """, (user_id, stage, reason, admin_id))
+        cursor.execute("INSERT INTO warnings (user_id, stage, reason, admin_id, is_active) VALUES (?, ?, ?, ?, 1)", (user_id, stage, reason, admin_id))
         warning_id = cursor.lastrowid
-
         user_before = get_user_from_db(user_id)
         old_balance = user_before[4] if user_before else 0.0
         new_balance = old_balance
 
-        if stage == 2:
+        if stage == 1:
+            # === НОВОЕ: запись наказания ===
+            add_punishment(user_id, "Предупреждение", f"Причина: {reason}. Выдал: {admin_id}")
+        elif stage == 2:
             deduction = old_balance * 0.3
             new_balance = update_user_balance(user_id, -deduction)
+            # === НОВОЕ: запись наказания ===
+            add_punishment(user_id, "Выговор (-30% баланса)", f"Причина: {reason}. Списано: {format_balance(deduction)} ₽. Выдал: {admin_id}")
         elif stage == 3:
             cursor.execute("UPDATE users SET strict_warning_active = 1 WHERE user_id = ?", (user_id,))
-            # NEW: strict sanction + revoke access
             apply_strict_sanction(user_id, admin_id)
 
         conn.commit()
@@ -1723,10 +1710,7 @@ def get_user_warnings(user_id: int) -> List[Tuple]:
 def create_deposit_request(user_id: int, amount: float) -> int:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO deposits (user_id, amount, status)
-        VALUES (?, ?, ?)
-    """, (user_id, amount, "pending"))
+    cursor.execute("INSERT INTO deposits (user_id, amount, status) VALUES (?, ?, ?)", (user_id, amount, "pending"))
     conn.commit()
     return cursor.lastrowid
 
@@ -1735,11 +1719,7 @@ def create_deposit_request(user_id: int, amount: float) -> int:
 def update_deposit_screenshot(deposit_id: int, screenshot_file_id: str) -> bool:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        UPDATE deposits
-        SET screenshot_file_id = ?
-        WHERE id = ?
-    """, (screenshot_file_id, deposit_id))
+    cursor.execute("UPDATE deposits SET screenshot_file_id = ? WHERE id = ?", (screenshot_file_id, deposit_id))
     conn.commit()
     return cursor.rowcount > 0
 
@@ -1768,8 +1748,7 @@ def get_pending_deposits_paginated(page: int = 0) -> List[Tuple]:
     cursor = conn.cursor()
     cursor.execute("""
         SELECT id, user_id, amount, screenshot_file_id, created_at FROM deposits
-        WHERE status = 'pending'
-        ORDER BY created_at DESC LIMIT 10 OFFSET ?
+        WHERE status = 'pending' ORDER BY created_at DESC LIMIT 10 OFFSET ?
     """, (offset,))
     return cursor.fetchall()
 
@@ -1779,8 +1758,7 @@ def update_deposit_status(deposit_id: int, new_status: str, processed_by: int = 
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        UPDATE deposits
-        SET status = ?, processed_by = ?, processed_at = CURRENT_TIMESTAMP
+        UPDATE deposits SET status = ?, processed_by = ?, processed_at = CURRENT_TIMESTAMP
         WHERE id = ? AND status = 'pending'
     """, (new_status, processed_by, deposit_id))
     conn.commit()
@@ -1792,9 +1770,7 @@ def notify_admins_about_new_deposit(deposit_id: int, user_id: int, amount: float
         try:
             bot.send_message(
                 admin_id,
-                LANGUAGES["ru"]["deposit_new_request_notify"].format(
-                    deposit_id, user_id, int(amount), format_timestamp()
-                ),
+                LANGUAGES["ru"]["deposit_new_request_notify"].format(deposit_id, user_id, int(amount), format_timestamp()),
                 parse_mode="HTML"
             )
         except Exception as e:
@@ -1806,7 +1782,6 @@ def show_deposit_requests(chat_id: int):
     if total_deposits == 0:
         bot.send_message(chat_id, "✅ Нет активных заявок на пополнение.")
         return
-
     deps = get_pending_deposits_paginated(page=0)
     markup = types.InlineKeyboardMarkup()
     for dep_id, user_id, amount, _, created_at in deps:
@@ -1818,12 +1793,8 @@ def show_deposit_requests(chat_id: int):
             callback_data=f"view_deposit_{dep_id}"
         ))
     markup.add(types.InlineKeyboardButton("🔙 Назад", callback_data="admin_back_btn"))
-    bot.send_message(
-        chat_id,
-        f"📋 <b>Активные заявки на пополнение ({total_deposits}):</b>",
-        parse_mode="HTML",
-        reply_markup=markup
-    )
+    bot.send_message(chat_id, f"📋 <b>Активные заявки на пополнение ({total_deposits}):</b>", parse_mode="HTML", reply_markup=markup)
+
 
 # ========================================
 # КЛАВИАТУРЫ
@@ -1864,29 +1835,24 @@ def get_categories_keyboard(product_key: str) -> types.InlineKeyboardMarkup:
 def get_subscriptions_keyboard(product_key: str, category_key: str) -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=1)
     periods = CATEGORIES[category_key]["periods"]
-
     buttons = []
     for period in periods:
         price = PRODUCTS[product_key]["prices"][period]
         display = PERIOD_DISPLAY[period]
-        buttons.append(
-            types.InlineKeyboardButton(
-                f"{display} — {price}₽",
-                callback_data=f"select_qty_{product_key}_{period}"
-            )
-        )
-
+        buttons.append(types.InlineKeyboardButton(f"{display} — {price}₽", callback_data=f"select_qty_{product_key}_{period}"))
     for i in range(0, len(buttons), 2):
         kb.row(*buttons[i:i + 2])
-
     kb.add(types.InlineKeyboardButton("🔙 Назад к категориям", callback_data=f"product_{product_key}"))
     return kb
 
 
 def get_profile_keyboard(user_id: int) -> types.InlineKeyboardMarkup:
+    lang = get_lang(user_id)
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(types.InlineKeyboardButton("💳 Создать заявку на баланс", callback_data=f"deposit_start_{user_id}"))
-    markup.add(types.InlineKeyboardButton(LANGUAGES[get_lang(user_id)]["my_tickets"], callback_data="my_tickets"))
+    # === НОВОЕ: кнопка Список покупок в профиле ===
+    markup.add(types.InlineKeyboardButton(LANGUAGES[lang]["shopping_list_btn"], callback_data=f"my_purchases_1_{user_id}"))
+    markup.add(types.InlineKeyboardButton(LANGUAGES[lang]["my_tickets"], callback_data="my_tickets"))
     markup.add(types.InlineKeyboardButton("🔙 Назад в меню", callback_data="back_to_menu"))
     return markup
 
@@ -1926,11 +1892,71 @@ def get_admin_keyboard(user_id: int) -> types.ReplyKeyboardMarkup:
     kb.add("📊 Наличие", "💸 Пополнить", "🧯 Обнулить", "🔓 Выдать доступ", "⚖️ Выдать варн",
            LANGUAGES[lang]["ticket_view_list"])
     kb.add(LANGUAGES[lang]["broadcast"], LANGUAGES[lang]["check_deposits_btn"])
+    # === НОВОЕ: кнопка Пользователи ===
+    kb.add(LANGUAGES[lang]["btn_users"])
     if is_super_admin(user_id):
         kb.add("🔑 Добавить ключ", "➕ Добавить админа", "👑 Супер-админ", "❌ Снять с админки",
                "🔐 Установить пароль админа")
     kb.add("🔙 Назад")
     return kb
+
+
+# === НОВОЕ: клавиатура списка покупок ===
+def get_purchases_keyboard(page: int, total_pages: int, lang: str, target_uid: int) -> types.InlineKeyboardMarkup:
+    markup = types.InlineKeyboardMarkup(row_width=5)
+    # Кнопки №1-№5
+    nums = [types.InlineKeyboardButton(str(i), callback_data=f"pur_item_{i}_{page}_{target_uid}") for i in range(1, 6)]
+    markup.row(*nums)
+    # Навигация
+    nav = []
+    if page > 1:
+        nav.append(types.InlineKeyboardButton(LANGUAGES[lang]["btn_prev"], callback_data=f"my_purchases_{page - 1}_{target_uid}"))
+    if page < total_pages:
+        nav.append(types.InlineKeyboardButton(LANGUAGES[lang]["btn_next"], callback_data=f"my_purchases_{page + 1}_{target_uid}"))
+    if nav:
+        markup.row(*nav)
+    # Действия
+    markup.row(
+        types.InlineKeyboardButton(LANGUAGES[lang]["btn_search_key"], callback_data=f"pur_search_{target_uid}"),
+        types.InlineKeyboardButton(LANGUAGES[lang]["btn_download_txt"], callback_data=f"pur_download_{target_uid}")
+    )
+    markup.row(
+        types.InlineKeyboardButton(LANGUAGES[lang]["btn_refresh_list"], callback_data=f"my_purchases_1_{target_uid}"),
+        types.InlineKeyboardButton(LANGUAGES[lang]["btn_to_catalog"], callback_data="back_to_menu")
+    )
+    return markup
+
+
+# === НОВОЕ: клавиатура списка пользователей (админ) ===
+def get_admin_users_keyboard(users: List[Tuple], page: int, total_pages: int, lang: str) -> types.InlineKeyboardMarkup:
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    for u in users:
+        uid, username, first_name, last_name, balance, created_at = u
+        if username:
+            label = f"@{username}"
+        elif first_name:
+            label = first_name + (f" {last_name}" if last_name else "")
+        else:
+            label = f"ID: {uid}"
+        markup.add(types.InlineKeyboardButton(label, callback_data=f"adm_userinfo_{uid}_{page}"))
+    nav = []
+    if page > 1:
+        nav.append(types.InlineKeyboardButton(LANGUAGES[lang]["btn_prev"], callback_data=f"adm_users_{page - 1}"))
+    if page < total_pages:
+        nav.append(types.InlineKeyboardButton(LANGUAGES[lang]["btn_next"], callback_data=f"adm_users_{page + 1}"))
+    if nav:
+        markup.row(*nav)
+    markup.add(types.InlineKeyboardButton("🔙 Назад", callback_data="admin_back_btn"))
+    return markup
+
+
+# === НОВОЕ: клавиатура детального профиля пользователя (админ) ===
+def get_admin_user_detail_keyboard(target_uid: int, from_page: int, lang: str) -> types.InlineKeyboardMarkup:
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(types.InlineKeyboardButton(LANGUAGES[lang]["btn_user_purchases"], callback_data=f"my_purchases_1_{target_uid}"))
+    markup.add(types.InlineKeyboardButton(LANGUAGES[lang]["btn_user_punishments"], callback_data=f"adm_punish_{target_uid}"))
+    markup.add(types.InlineKeyboardButton("🔙 Назад к списку", callback_data=f"adm_users_{from_page}"))
+    return markup
 
 
 def get_access_menu_keyboard() -> types.InlineKeyboardMarkup:
@@ -2001,7 +2027,7 @@ def _addkey_period_keyboard(product_key: str) -> types.InlineKeyboardMarkup:
     periods = [p for p in ADDKEY_ALLOWED_PERIODS if p in PRODUCTS[product_key]["prices"]]
     btns = [types.InlineKeyboardButton(period, callback_data=f"addkey_period_{product_key}_{period}") for period in periods]
     for i in range(0, len(btns), 3):
-        kb.row(*btns[i:i+3])
+        kb.row(*btns[i:i + 3])
     kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="addkey_back_products"))
     kb.add(types.InlineKeyboardButton("❌ Отмена", callback_data="addkey_cancel"))
     return kb
@@ -2021,38 +2047,107 @@ def send_access_denied(message):
 
 
 # ========================================
+# === НОВОЕ: ФУНКЦИЯ ПОКАЗА СПИСКА ПОКУПОК ===
+# ========================================
+def show_purchases_page(chat_id: int, user_id: int, target_uid: int, page: int, edit_msg_id: int = None):
+    """Универсальная функция показа страницы покупок."""
+    lang = get_lang(user_id)
+    try:
+        items, total_count, total_pages, total_spent = get_user_purchases_paginated(target_uid, page, PURCHASES_PER_PAGE)
+
+        if total_count == 0:
+            text = LANGUAGES[lang]["my_purchases_title"] + "\n\n" + LANGUAGES[lang]["no_purchases"]
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton(LANGUAGES[lang]["btn_to_catalog"], callback_data="back_to_menu"))
+            if edit_msg_id:
+                bot.edit_message_text(text, chat_id, edit_msg_id, parse_mode="HTML", reply_markup=markup)
+            else:
+                bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+            return
+
+        text = LANGUAGES[lang]["my_purchases_title"] + "\n\n"
+        text += LANGUAGES[lang]["total_spent"].format(format_balance(total_spent)) + "\n"
+        text += LANGUAGES[lang]["page_info"].format(page, total_pages) + "\n\n"
+
+        start_num = (page - 1) * PURCHASES_PER_PAGE + 1
+        for idx, p in enumerate(items):
+            num = start_num + idx
+            key = p.get("key", "—")
+            product = p.get("product", "—")
+            text += f"<b>{num}.</b> <code>{key}</code> | {product}\n"
+
+        markup = get_purchases_keyboard(page, total_pages, lang, target_uid)
+
+        if edit_msg_id:
+            bot.edit_message_text(text, chat_id, edit_msg_id, parse_mode="HTML", reply_markup=markup)
+        else:
+            bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+
+    except Exception as e:
+        logger.error(f"Ошибка show_purchases_page: {e}")
+        bot.send_message(chat_id, "⚠️ Ошибка при загрузке списка покупок.")
+
+
+# === НОВОЕ: ФУНКЦИЯ ПОКАЗА СПИСКА ПОЛЬЗОВАТЕЛЕЙ (АДМИН) ===
+def show_admin_users_page(chat_id: int, user_id: int, page: int, edit_msg_id: int = None):
+    """Показ списка пользователей для админки."""
+    lang = get_lang(user_id)
+    try:
+        total = get_authorized_users_count()
+        total_pages = max(1, math.ceil(total / USERS_PER_PAGE))
+        page = max(1, min(page, total_pages))
+        users = get_all_users_paginated(page, USERS_PER_PAGE)
+
+        text = LANGUAGES[lang]["admin_users_title"].format(total) + "\n"
+        text += LANGUAGES[lang]["page_info"].format(page, total_pages) + "\n\n"
+
+        for u in users:
+            uid, username, first_name, last_name, balance, created_at = u
+            if username:
+                label = f"@{username}"
+            elif first_name:
+                label = first_name + (f" {last_name}" if last_name else "")
+            else:
+                label = f"ID: {uid}"
+            text += f"• {label}\n"
+
+        markup = get_admin_users_keyboard(users, page, total_pages, lang)
+
+        if edit_msg_id:
+            bot.edit_message_text(text, chat_id, edit_msg_id, parse_mode="HTML", reply_markup=markup)
+        else:
+            bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+
+    except Exception as e:
+        logger.error(f"Ошибка show_admin_users_page: {e}")
+        bot.send_message(chat_id, "⚠️ Ошибка при загрузке списка пользователей.")
+
+
+# ========================================
 # КОМАНДЫ
 # ========================================
 @bot.message_handler(commands=["start"])
 def cmd_start(message):
     if check_strict_block_and_notify_message(message):
         return
-
     user_id = message.from_user.id
-
     if not check_user_access(user_id):
         clear_user_state(user_id)
         bot.send_message(message.chat.id, LANGUAGES[get_lang(user_id)]["access_denied"])
         return
-
     clear_user_state(user_id)
     first_name = message.from_user.first_name or ""
     last_name = message.from_user.last_name or ""
     username = message.from_user.username or ""
     user_languages.setdefault(user_id, "ru")
     update_user_info(user_id, first_name, last_name, username)
-    bot.send_message(
-        message.chat.id,
-        LANGUAGES[get_lang(user_id)]["welcome"],
-        reply_markup=get_main_keyboard(user_id)
-    )
+    bot.send_message(message.chat.id, LANGUAGES[get_lang(user_id)]["welcome"], reply_markup=get_main_keyboard(user_id))
 
 
 @bot.message_handler(commands=["login"])
 def cmd_login(message):
     if check_strict_block_and_notify_message(message):
         return
-
     user_id = message.from_user.id
     if check_user_access(user_id):
         bot.send_message(message.chat.id, "✅ У вас уже есть доступ к боту!")
@@ -2082,28 +2177,23 @@ def cmd_refresh_keys(message):
 def cmd_create_ticket(message):
     if check_strict_block_and_notify_message(message):
         return
-
     user_id = message.from_user.id
     if not check_user_access(user_id):
         send_access_denied(message)
         return
-
     lang = get_lang(user_id)
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip():
         bot.reply_to(message, LANGUAGES[lang]["ticket_empty_message"], parse_mode="HTML")
         return
-
     message_text = parts[1].strip()
     if len(message_text) < 10:
         bot.reply_to(message, "❌ Опишите проблему подробнее, минимум 10 символов.")
         return
-
     ticket_id = create_ticket(user_id, message_text)
     if not ticket_id:
-        bot.reply_to(message, "❌ Произошла ошибка при создании тикета. Попробуйте позже.")
+        bot.reply_to(message, "❌ Произошла ошибка при создании тикета.")
         return
-
     bot.reply_to(message, LANGUAGES[lang]["ticket_created"].format(ticket_id), parse_mode="HTML")
     notify_admins_about_new_ticket(ticket_id, user_id, message_text, datetime.now())
 
@@ -2112,17 +2202,14 @@ def cmd_create_ticket(message):
 def cmd_my_tickets(message):
     if check_strict_block_and_notify_message(message):
         return
-
     user_id = message.from_user.id
     if not check_user_access(user_id):
         send_access_denied(message)
         return
-
     tickets = get_user_tickets(user_id)
     if not tickets:
         bot.send_message(message.chat.id, "ℹ️ У вас нет созданных тикетов.")
         return
-
     bot.send_message(message.chat.id, "📋 <b>Ваши тикеты:</b>", parse_mode="HTML", reply_markup=get_tickets_user_keyboard(tickets))
 
 
@@ -2130,47 +2217,31 @@ def cmd_my_tickets(message):
 def cmd_check_ticket(message):
     if check_strict_block_and_notify_message(message):
         return
-
     user_id = message.from_user.id
     if not is_admin(user_id):
         return
-
     lang = get_lang(user_id)
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
         bot.reply_to(message, "❌ Используйте формат: /checkticket <ID тикета>")
         return
-
     try:
         ticket_id = int(parts[1])
     except ValueError:
         bot.reply_to(message, "❌ ID тикета должен быть числом")
         return
-
     ticket = get_ticket_by_id(ticket_id)
     if not ticket:
         bot.reply_to(message, LANGUAGES[lang]["ticket_not_found"])
         return
-
     if ticket[3] == "open":
         update_ticket_status(ticket_id, "in_progress")
         ticket = get_ticket_by_id(ticket_id)
-
     status_text = TICKET_STATUSES.get(ticket[3], {}).get("ru", ticket[3])
     admin_reply = ticket[5] if ticket[5] is not None else "<i>Ответа пока нет</i>"
-
-    bot.reply_to(
-        message,
-        LANGUAGES[lang]["ticket_info_header"].format(
-            ticket_id,
-            ticket[1],
-            format_timestamp(ticket[4]),
-            status_text,
-            safe_text(ticket[2]),
-            safe_text(admin_reply)
-        ),
-        parse_mode="HTML"
-    )
+    bot.reply_to(message, LANGUAGES[lang]["ticket_info_header"].format(
+        ticket_id, ticket[1], format_timestamp(ticket[4]), status_text, safe_text(ticket[2]), safe_text(admin_reply)
+    ), parse_mode="HTML")
     bot.send_message(message.chat.id, LANGUAGES[lang]["ticket_awaiting_reply"])
     user_states[user_id] = f"awaiting_ticket_reply_{ticket_id}"
 
@@ -2179,17 +2250,14 @@ def cmd_check_ticket(message):
 def cmd_my_warn(message):
     if check_strict_block_and_notify_message(message):
         return
-
     user_id = message.from_user.id
     if not check_user_access(user_id):
         send_access_denied(message)
         return
-
     warnings = get_user_warnings(user_id)
     if not warnings:
         bot.reply_to(message, "✅ <b>У вас нет действующих предупреждений</b>", parse_mode="HTML")
         return
-
     text = "<b>📋 ВАШИ АКТИВНЫЕ ПРЕДУПРЕЖДЕНИЯ:</b>\n\n"
     for idx, warning in enumerate(warnings, 1):
         _, stage, reason, issued_at, _, _ = warning
@@ -2197,7 +2265,6 @@ def cmd_my_warn(message):
         time_formatted = format_timestamp(issued_at)
         text += f"<b>{idx}. {stage_name}</b> (от {time_formatted})\n"
         text += f" <i>Причина:</i> {reason}\n\n"
-
     bot.reply_to(message, text, parse_mode="HTML")
 
 
@@ -2205,7 +2272,6 @@ def cmd_my_warn(message):
 def cmd_warn(message):
     if check_strict_block_and_notify_message(message):
         return
-
     if not is_super_admin(message.from_user.id):
         bot.reply_to(message, LANGUAGES[get_lang(message.from_user.id)]["limited_access"])
         return
@@ -2217,26 +2283,21 @@ def cmd_warn(message):
         target_id = int(parts[1])
         stage = int(parts[2])
         reason = parts[3].strip()
-
         if stage not in [1, 2, 3]:
             bot.reply_to(message, "❌ Ошибка: уровень должен быть 1, 2 или 3")
             return
         if len(reason) < 10:
             bot.reply_to(message, "❌ Ошибка: причина должна быть не менее 10 символов")
             return
-
         user_db = get_user_from_db(target_id)
         if not user_db:
-            bot.reply_to(message, "❌ Ошибка: пользователь с таким ID не найден")
+            bot.reply_to(message, "❌ Ошибка: пользователь не найден")
             return
-
         result = issue_warning(target_id, stage, reason, message.from_user.id)
         if not result:
-            bot.reply_to(message, "❌ Ошибка: не удалось выдать предупреждение. См. логи.")
+            bot.reply_to(message, "❌ Ошибка: не удалось выдать предупреждение.")
             return
-
         username_target = f"@{user_db[1]}" if user_db[1] else f"ID {target_id}"
-
         if stage == 1:
             notif_text = f"🔔 Вам выдано <b>предупреждение</b>.\nПричина: {reason}"
         elif stage == 2:
@@ -2248,49 +2309,36 @@ def cmd_warn(message):
             row = get_strict_sanction(target_id)
             until_ts = int(row[1]) if row else int(time.time() + STRICT_WARN_DAYS * 86400)
             notif_text = f"🚨 Вам выдан <b>СТРОГИЙ ВЫГОВОР</b>.\nПричина: {reason}\n\n{strict_block_message(until_ts)}"
-
         try:
             bot.send_message(target_id, notif_text, parse_mode="HTML")
         except Exception:
             pass
-
         notify_admins_about_warning(target_id, stage, reason, message.from_user.id)
         bot.reply_to(message, f"✅ Предупреждение (ур. {stage}) успешно выдано пользователю {username_target}")
-
     except ValueError:
         bot.reply_to(message, "❌ Ошибка: ID и уровень должны быть числами")
     except Exception as e:
-        bot.reply_to(message, f"❌ Непредвиденная ошибка: {str(e)}")
+        bot.reply_to(message, f"❌ Ошибка: {str(e)}")
 
 
 @bot.message_handler(commands=["remove_warn"])
 def cmd_remove_warn(message):
     if check_strict_block_and_notify_message(message):
         return
-
     if not is_super_admin(message.from_user.id):
         return bot.reply_to(message, LANGUAGES[get_lang(message.from_user.id)]["limited_access"])
-
     parts = message.text.split(maxsplit=1)
     if len(parts) != 2 or not parts[1].strip().lstrip("@").isdigit():
         return bot.reply_to(message, "Используйте: <code>/remove_warn <user_id></code>", parse_mode="HTML")
-
     target_id = int(parts[1].strip().lstrip("@"))
     get_user_from_db(target_id)
-
     conn = get_db_connection()
     cursor = conn.cursor()
-
-    # deactivate warnings (все активные)
     cursor.execute("UPDATE warnings SET is_active = 0 WHERE user_id = ? AND is_active = 1", (target_id,))
-    # remove strict flags
     cursor.execute("UPDATE users SET strict_warning_active = 0 WHERE user_id = ?", (target_id,))
     cursor.execute("DELETE FROM strict_sanctions WHERE user_id = ?", (target_id,))
     conn.commit()
-
-    # restore access (по ТЗ для /remove_warn возвращаем доступ)
     grant_user_access(target_id, message.from_user.id)
-
     bot.reply_to(message, f"✅ Снято. Пользователь <code>{target_id}</code>: варны/запреты сняты, доступ восстановлен.", parse_mode="HTML")
     try:
         bot.send_message(target_id, "✅ Ваши предупреждения/ограничения сняты администратором. Доступ восстановлен.")
@@ -2302,11 +2350,9 @@ def cmd_remove_warn(message):
 def cmd_admin(message):
     if check_strict_block_and_notify_message(message):
         return
-
     user_id = message.from_user.id
     if not is_admin(user_id):
         return
-
     lang = get_lang(user_id)
     password = load_admin_password()
     if not password:
@@ -2325,13 +2371,12 @@ def cmd_admin(message):
 def cmd_set_admin_password(message):
     if check_strict_block_and_notify_message(message):
         return
-
     if not is_super_admin(message.from_user.id):
         return bot.reply_to(message, LANGUAGES[get_lang(message.from_user.id)]["limited_access"])
     try:
         args = message.text.split(maxsplit=1)
         if len(args) != 2:
-            bot.reply_to(message, "❌ Неверный формат. Используйте: <code>/set_admin_password ВАШ_ПАРОЛЬ</code>", parse_mode="HTML")
+            bot.reply_to(message, "❌ Используйте: <code>/set_admin_password ПАРОЛЬ</code>", parse_mode="HTML")
             return
         new_password = args[1].strip()
         if len(new_password) < 6:
@@ -2347,7 +2392,6 @@ def cmd_set_admin_password(message):
 def cmd_add_balance(message):
     if check_strict_block_and_notify_message(message):
         return
-
     if not is_admin(message.from_user.id):
         return
     try:
@@ -2357,16 +2401,14 @@ def cmd_add_balance(message):
         target_id = int(parts[1].lstrip("@"))
         amount = float(parts[2])
         if amount <= 0:
-            bot.reply_to(message, "❌ Сумма пополнения должна быть больше нуля.")
+            bot.reply_to(message, "❌ Сумма должна быть больше нуля.")
             return
-
         get_user_from_db(target_id)
         new_bal = update_user_balance(target_id, amount)
         bot.reply_to(message, f"✅ Баланс пользователя {target_id} пополнен на {int(amount)} ₽. Новый баланс: {int(new_bal)} ₽.")
         send_balance_notification(target_id, amount, new_bal)
-
     except (ValueError, IndexError):
-        bot.reply_to(message, "❌ Неверный формат. Используйте: <code>/add_balance ID сумма</code>", parse_mode="HTML")
+        bot.reply_to(message, "❌ Используйте: <code>/add_balance ID сумма</code>", parse_mode="HTML")
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {str(e)}")
 
@@ -2375,7 +2417,6 @@ def cmd_add_balance(message):
 def cmd_remove_admin(message):
     if check_strict_block_and_notify_message(message):
         return
-
     if not is_super_admin(message.from_user.id):
         return bot.reply_to(message, LANGUAGES[get_lang(message.from_user.id)]["limited_access"])
     try:
@@ -2386,81 +2427,73 @@ def cmd_remove_admin(message):
         if not is_admin(target_id):
             return bot.reply_to(message, f"❌ Пользователь {target_id} не является админом.")
         remove_from_admin(target_id)
-        bot.reply_to(message, f"✅ Права администратора у пользователя {target_id} отозваны.")
+        bot.reply_to(message, f"✅ Права администратора у {target_id} отозваны.")
     except (ValueError, IndexError):
-        bot.reply_to(message, "❌ Неверный формат. Используйте: <code>/remove_admin ID</code>", parse_mode="HTML")
+        bot.reply_to(message, "❌ Используйте: <code>/remove_admin ID</code>", parse_mode="HTML")
 
 
 @bot.message_handler(commands=["add_super_admin"])
 def cmd_add_super_admin(message):
     if check_strict_block_and_notify_message(message):
         return
-
     if not is_super_admin(message.from_user.id):
         return bot.reply_to(message, LANGUAGES[get_lang(message.from_user.id)]["limited_access"])
     try:
         _, target = message.text.split()
         new_id = int(target.lstrip("@"))
         if is_super_admin(new_id):
-            return bot.reply_to(message, f"⚠️ Пользователь {new_id} уже является супер-админом.")
+            return bot.reply_to(message, f"⚠️ {new_id} уже супер-админ.")
         if add_to_admin("super", new_id):
-            bot.reply_to(message, f"✅ Пользователь {new_id} успешно назначен Супер-Админом!")
+            bot.reply_to(message, f"✅ {new_id} назначен Супер-Админом!")
             try:
                 bot.send_message(new_id, "👑 Вы были назначены СУПЕР-АДМИНОМ!", parse_mode="HTML")
             except Exception:
                 pass
     except (ValueError, IndexError):
-        bot.reply_to(message, "❌ Неверный формат. Используйте: <code>/add_super_admin ID</code>", parse_mode="HTML")
+        bot.reply_to(message, "❌ Используйте: <code>/add_super_admin ID</code>", parse_mode="HTML")
 
 
 @bot.message_handler(commands=["add_admin"])
 def cmd_add_admin(message):
     if check_strict_block_and_notify_message(message):
         return
-
     if not is_super_admin(message.from_user.id):
         return bot.reply_to(message, LANGUAGES[get_lang(message.from_user.id)]["limited_access"])
     try:
         _, target = message.text.split()
         new_id = int(target.lstrip("@"))
         if is_admin(new_id):
-            return bot.reply_to(message, f"⚠️ Пользователь {new_id} уже является админом.")
+            return bot.reply_to(message, f"⚠️ {new_id} уже админ.")
         if add_to_admin("regular", new_id):
-            bot.reply_to(message, f"✅ Пользователь {new_id} успешно назначен администратором.")
+            bot.reply_to(message, f"✅ {new_id} назначен администратором.")
             try:
                 bot.send_message(new_id, "🛠️ Вы были назначены администратором!", parse_mode="HTML")
             except Exception:
                 pass
     except (ValueError, IndexError):
-        bot.reply_to(message, "❌ Неверный формат. Используйте: <code>/add_admin ID</code>", parse_mode="HTML")
+        bot.reply_to(message, "❌ Используйте: <code>/add_admin ID</code>", parse_mode="HTML")
 
 
 @bot.message_handler(commands=["list_admins"])
 def cmd_list_admins(message):
     if check_strict_block_and_notify_message(message):
         return
-
     if not is_super_admin(message.from_user.id):
         return bot.reply_to(message, LANGUAGES[get_lang(message.from_user.id)]["limited_access"])
-
     super_admins = get_super_admins()
     admins = get_all_admins()
     text = "<b>📋 Список администраторов:</b>\n"
-
     if super_admins:
         text += "\n👑 <b>Супер-Админы:</b>\n"
         for aid in super_admins:
             text += f" • <code>{aid}</code>\n"
-
     regular_admins = [a for a in admins if a not in super_admins]
     if regular_admins:
         text += "\n👤 <b>Админы:</b>\n"
         for aid in regular_admins:
             text += f" • <code>{aid}</code>\n"
-
     if not admins:
         text = "ℹ️ Список администраторов пуст."
-
     bot.reply_to(message, text, parse_mode="HTML")
 
 
@@ -2468,26 +2501,16 @@ def cmd_list_admins(message):
 def cmd_addkey(message):
     if check_strict_block_and_notify_message(message):
         return
-
     if not is_super_admin(message.from_user.id):
         return bot.reply_to(message, LANGUAGES[get_lang(message.from_user.id)]["limited_access"])
     try:
         args = message.text.split(maxsplit=3)
-
-        # NEW: интерактивный режим /addkey без аргументов
         if len(args) == 1:
             user_states[f"addkey_{message.from_user.id}"] = {"step": "product"}
-            bot.send_message(
-                message.chat.id,
-                "<b>🔑 Добавление ключей</b>\n\nВыберите товар:",
-                parse_mode="HTML",
-                reply_markup=_addkey_product_keyboard()
-            )
+            bot.send_message(message.chat.id, "<b>🔑 Добавление ключей</b>\n\nВыберите товар:", parse_mode="HTML", reply_markup=_addkey_product_keyboard())
             return
-
-        # Старый быстрый формат оставляем
         if len(args) != 4:
-            return bot.reply_to(message, "Используйте: <code>/addkey ПРОДУКТ ПЕРИОД КЛЮЧ</code> или просто <code>/addkey</code>", parse_mode="HTML")
+            return bot.reply_to(message, "Используйте: <code>/addkey ПРОДУКТ ПЕРИОД КЛЮЧ</code> или <code>/addkey</code>", parse_mode="HTML")
         _, product_key, period, key = args
         product_key = product_key.lower()
         period = period.lower()
@@ -2498,7 +2521,7 @@ def cmd_addkey(message):
         if add_key_to_file(product_key, period, key):
             bot.reply_to(message, f"✅ Ключ <code>{key}</code> добавлен для {product_key} ({period}).", parse_mode="HTML")
         else:
-            bot.reply_to(message, "❌ Ошибка при добавлении ключа в файл.")
+            bot.reply_to(message, "❌ Ошибка при добавлении ключа.")
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {str(e)}")
 
@@ -2507,7 +2530,6 @@ def cmd_addkey(message):
 def cmd_cancel(message):
     if check_strict_block_and_notify_message(message):
         return
-
     uid = message.from_user.id
     if user_states.get(uid) or user_states.get(f"broadcast_{uid}") or user_states.get(f"addkey_{uid}"):
         clear_user_state(uid)
@@ -2527,38 +2549,33 @@ def cmd_myid(message):
 def cmd_help(message):
     if check_strict_block_and_notify_message(message):
         return
-
     user_id = message.from_user.id
     if not check_user_access(user_id):
         send_access_denied(message)
         return
-
     lang = get_lang(user_id)
     help_text = "<b>ℹ️ Доступные команды:</b>\n"
     help_text += "/start - <i>Начало работы</i>\n"
     help_text += "/login - <i>Ввод пароля доступа</i>\n"
     help_text += "/help - <i>Это сообщение</i>\n"
     help_text += "/my_warn - <i>Мои предупреждения</i>\n"
-    help_text += "/ticket <code>[текст]</code> - <i>Создать обращение в поддержку</i>\n"
+    help_text += "/ticket <code>[текст]</code> - <i>Создать обращение</i>\n"
     help_text += "/my_tickets - <i>Мои обращения</i>\n"
-
     if is_admin(user_id):
         help_text += "\n<b>Админ-команды:</b>\n"
-        help_text += "/add_balance <code>[id] [сумма]</code> - <i>Пополнить баланс</i>\n"
-        help_text += "/checkticket <code>[id]</code> - <i>Проверить тикет</i>\n"
-        help_text += "/refresh_keys - <i>Обновить склад ключей</i>\n"
-
+        help_text += "/add_balance <code>[id] [сумма]</code>\n"
+        help_text += "/checkticket <code>[id]</code>\n"
+        help_text += "/refresh_keys\n"
     if is_super_admin(user_id):
         help_text += "\n<b>👑 Супер-админ:</b>\n"
         help_text += "/add_admin <code>[id]</code>\n"
         help_text += "/add_super_admin <code>[id]</code>\n"
         help_text += "/remove_admin <code>[id]</code>\n"
         help_text += "/list_admins\n"
-        help_text += "/addkey <code>[prod] [period] [key]</code> или /addkey (интерактивно)\n"
+        help_text += "/addkey\n"
         help_text += "/set_admin_password <code>[пароль]</code>\n"
         help_text += "/warn <code>[id] [1-3] [причина]</code>\n"
         help_text += "/remove_warn <code>[id]</code>\n"
-
     bot.send_message(message.chat.id, help_text, parse_mode="HTML")
 
 
@@ -2567,21 +2584,18 @@ def cmd_help(message):
 # ========================================
 @bot.message_handler(content_types=["text"])
 def handle_text(message):
-    # NEW: строгий выговор — полностью блокируем
     if check_strict_block_and_notify_message(message):
         return
-
     user_id = message.from_user.id
     chat_id = message.chat.id
     text = message.text or ""
     lang = get_lang(user_id)
     current_state = user_states.get(user_id)
 
-    # Не перехватываем команды, пусть их обработают command handlers
     if text.lstrip().startswith("/"):
         return
 
-    # интерактивный /addkey: ожидаем ключи
+    # интерактивный /addkey
     addkey_state = user_states.get(f"addkey_{user_id}")
     if addkey_state and isinstance(addkey_state, dict) and addkey_state.get("step") == "await_keys":
         product_key = addkey_state["product"]
@@ -2592,24 +2606,37 @@ def handle_text(message):
         user_states.pop(f"addkey_{user_id}", None)
         bot.send_message(
             chat_id,
-            f"✅ Результат:\n"
-            f"Добавлено: <b>{added}</b>\n"
-            f"Теперь на складе: <b>{stock}</b>\n\n"
-            f"Товар: <b>{PRODUCTS[product_key]['name']}</b>\n"
-            f"Период: <b>{period}</b>",
+            f"✅ Результат:\nДобавлено: <b>{added}</b>\nТеперь на складе: <b>{stock}</b>\n\nТовар: <b>{PRODUCTS[product_key]['name']}</b>\nПериод: <b>{period}</b>",
             parse_mode="HTML",
             reply_markup=get_admin_keyboard(user_id) if is_admin(user_id) else get_main_keyboard(user_id)
         )
         return
 
-    # Если не админ и нет доступа — показываем ограничение, но только вне состояний
     if not is_admin(user_id) and not current_state and not check_user_access(user_id):
         send_access_denied(message)
         return
 
-    # ========================================
+    # === НОВОЕ: состояние поиска покупок ===
+    if current_state and isinstance(current_state, str) and current_state.startswith("pur_search_awaiting_"):
+        target_uid = int(current_state.replace("pur_search_awaiting_", ""))
+        query = text.strip()
+        clear_user_state(user_id)
+        if not query:
+            bot.send_message(chat_id, LANGUAGES[lang]["search_empty"])
+            return
+        results = search_user_purchases(target_uid, query)
+        if not results:
+            bot.send_message(chat_id, LANGUAGES[lang]["search_empty"])
+        else:
+            result_text = LANGUAGES[lang]["search_results"]
+            for idx, p in enumerate(results, 1):
+                key = p.get("key", "—")
+                product = p.get("product", "—")
+                result_text += f"{idx}. <code>{key}</code> | {product}\n"
+            bot.send_message(chat_id, result_text, parse_mode="HTML")
+        return
+
     # СОСТОЯНИЯ
-    # ========================================
     if current_state:
         if current_state in ("waiting_for_password", "awaiting_access_password"):
             handle_login(message)
@@ -2618,17 +2645,14 @@ def handle_text(message):
         if current_state == "awaiting_user_id_for_access":
             identifier = text.strip()
             target_user = get_user_by_username_or_id(identifier)
-
             if not target_user:
                 bot.send_message(chat_id, LANGUAGES[lang]["user_not_found"])
                 return
-
             target_id = target_user[0]
             if is_user_access_granted(target_id):
                 bot.send_message(chat_id, "❌ Этот пользователь уже имеет доступ!")
                 clear_user_state(user_id)
                 return
-
             if grant_user_access(target_id, user_id):
                 try:
                     bot.send_message(target_id, LANGUAGES[get_lang(target_id)]["access_granted"], parse_mode="HTML")
@@ -2638,7 +2662,6 @@ def handle_text(message):
                 bot.send_message(chat_id, LANGUAGES[lang]["access_granted_admin"].format(username), parse_mode="HTML")
             else:
                 bot.send_message(chat_id, "❌ Ошибка при выдаче доступа!")
-
             clear_user_state(user_id)
             return
 
@@ -2660,16 +2683,14 @@ def handle_text(message):
             except ValueError:
                 bot.send_message(chat_id, "❌ Отправьте корректное число (например: 1000)")
                 return
-
             deposit_id = create_deposit_request(user_id, amount)
             user_states[user_id] = "deposit_wait_screenshot"
             deposit_context[user_id] = deposit_id
             req_text = (
                 f"✅ <b>Заявка №{deposit_id} создана!</b>\n\n"
                 f"💰 Сумма к оплате: <b>{int(amount)} ₽</b>\n\n"
-                f"🏦 Пожалуйста, переведите сумму по реквизитам:\n\n"
-                f"<code>{PAYMENT_REQUISITES}</code>\n\n"
-                f"📸 <b>После перевода отправьте скриншот/чек об оплате прямо в этот чат.</b>"
+                f"🏦 Переведите сумму по реквизитам:\n\n<code>{PAYMENT_REQUISITES}</code>\n\n"
+                f"📸 <b>После перевода отправьте скриншот/чек в этот чат.</b>"
             )
             bot.send_message(chat_id, req_text, parse_mode="HTML")
             notify_admins_about_new_deposit(deposit_id, user_id, amount)
@@ -2695,11 +2716,7 @@ def handle_text(message):
             try:
                 target_user_id = ticket[1]
                 target_lang = get_lang(target_user_id)
-                bot.send_message(
-                    target_user_id,
-                    LANGUAGES[target_lang]["ticket_new_reply_user"].format(ticket_id, safe_text(reply_text)),
-                    parse_mode="HTML"
-                )
+                bot.send_message(target_user_id, LANGUAGES[target_lang]["ticket_new_reply_user"].format(ticket_id, safe_text(reply_text)), parse_mode="HTML")
             except Exception as e:
                 logger.error(f"Ошибка отправки ответа на тикет {ticket_id}: {e}")
             bot.send_message(chat_id, LANGUAGES[lang]["ticket_reply_sent_admin"].format(ticket_id), reply_markup=get_admin_keyboard(user_id))
@@ -2709,7 +2726,7 @@ def handle_text(message):
             stage = int(current_state.split("_")[-1])
             parts = text.split(maxsplit=1)
             if len(parts) < 2:
-                bot.send_message(chat_id, "❌ Неверный формат. Отправьте: <ID> <причина (мин. 10 символов)>")
+                bot.send_message(chat_id, "❌ Отправьте: <ID> <причина (мин. 10 символов)>")
                 return
             try:
                 target_id = int(parts[0])
@@ -2718,39 +2735,36 @@ def handle_text(message):
                 return
             reason = parts[1].strip()
             if len(reason) < 10:
-                bot.send_message(chat_id, "❌ Причина должна содержать минимум 10 символов!")
+                bot.send_message(chat_id, "❌ Причина минимум 10 символов!")
                 return
             user_db = get_user_from_db(target_id)
             if not user_db:
-                bot.send_message(chat_id, "❌ Пользователь не найден в БД!")
+                bot.send_message(chat_id, "❌ Пользователь не найден!")
                 clear_user_state(user_id)
                 return
-
             result = issue_warning(target_id, stage, reason, user_id)
             clear_user_state(user_id)
             if not result:
-                bot.send_message(chat_id, "❌ Не удалось выдать предупреждение. Проверьте логи.")
+                bot.send_message(chat_id, "❌ Не удалось выдать предупреждение.")
                 return
-
             username_target = f"@{user_db[1]}" if user_db and user_db[1] else f"ID {target_id}"
             if stage == 1:
                 notif_text = f"🔔 Вам выдано <b>предупреждение</b>.\nПричина: {reason}"
             elif stage == 2:
                 notif_text = (
                     f"⚠️ Вам выдан <b>ВЫГОВОР</b>.\nПричина: {reason}\n"
-                    f"С вашего баланса списано 30%: {format_balance(result['old_balance'])} ₽ → {format_balance(result['new_balance'])} ₽"
+                    f"Списано 30%: {format_balance(result['old_balance'])} ₽ → {format_balance(result['new_balance'])} ₽"
                 )
             else:
                 row = get_strict_sanction(target_id)
                 until_ts = int(row[1]) if row else int(time.time() + STRICT_WARN_DAYS * 86400)
                 notif_text = f"🚨 Вам выдан <b>СТРОГИЙ ВЫГОВОР</b>.\nПричина: {reason}\n\n{strict_block_message(until_ts)}"
-
             try:
                 bot.send_message(target_id, notif_text, parse_mode="HTML")
             except Exception:
                 pass
             notify_admins_about_warning(target_id, stage, reason, user_id)
-            bot.send_message(chat_id, f"✅ Предупреждение (ур. {stage}) успешно выдано пользователю {username_target}", reply_markup=get_admin_keyboard(user_id))
+            bot.send_message(chat_id, f"✅ Предупреждение (ур. {stage}) выдано {username_target}", reply_markup=get_admin_keyboard(user_id))
             return
 
         if current_state == "awaiting_reset_balance":
@@ -2759,38 +2773,28 @@ def handle_text(message):
             except ValueError:
                 bot.send_message(chat_id, "❌ ID должен быть числом!")
                 return
-
             user_db = get_user_from_db(target_id)
             if not user_db:
-                bot.send_message(chat_id, "❌ Пользователь не найден в БД!")
+                bot.send_message(chat_id, "❌ Пользователь не найден!")
                 clear_user_state(user_id)
                 return
-
             user_data = get_user_data(target_id)
             old_balance = user_data.get("balance", 0.0)
             if old_balance > 0:
                 update_user_balance(target_id, -old_balance)
-
             clear_user_state(user_id)
             username_target = f"@{user_db[1]}" if user_db and user_db[1] else f"ID {target_id}"
-            bot.send_message(chat_id, f"✅ Баланс пользователя {username_target} обнулён.", reply_markup=get_admin_keyboard(user_id))
+            bot.send_message(chat_id, f"✅ Баланс {username_target} обнулён.", reply_markup=get_admin_keyboard(user_id))
             return
 
         if current_state == "awaiting_broadcast":
             clear_user_state(user_id)
             user_states[f"broadcast_{user_id}"] = text
             markup = get_broadcast_confirm_keyboard()
-            bot.send_message(
-                chat_id,
-                f"{LANGUAGES[lang]['broadcast_confirm']}\n\n<i>Ваше сообщение:</i>\n{text}",
-                parse_mode="HTML",
-                reply_markup=markup
-            )
+            bot.send_message(chat_id, f"{LANGUAGES[lang]['broadcast_confirm']}\n\n<i>Ваше сообщение:</i>\n{text}", parse_mode="HTML", reply_markup=markup)
             return
 
-    # ========================================
     # КНОПКИ
-    # ========================================
     if btn_equals(text, LANGUAGES[lang]["top_up_balance"]):
         user_states[user_id] = "deposit_wait_amount"
         bot.send_message(chat_id, LANGUAGES[lang]["deposit_wait_amount"], parse_mode="HTML")
@@ -2839,6 +2843,11 @@ def handle_text(message):
         bot.send_message(chat_id, LANGUAGES[lang]["welcome"], reply_markup=get_main_keyboard(user_id))
         return
 
+    # === НОВОЕ: кнопка «Пользователи» в админ-панели ===
+    if is_admin(user_id) and (btn_equals(text, LANGUAGES["ru"]["btn_users"]) or btn_equals(text, LANGUAGES["en"]["btn_users"])):
+        show_admin_users_page(chat_id, user_id, page=1)
+        return
+
     if is_admin(user_id) and btn_equals(text, LANGUAGES[lang]["ticket_view_list"]):
         total_tickets = count_open_tickets()
         if total_tickets == 0:
@@ -2851,10 +2860,7 @@ def handle_text(message):
             status_text = TICKET_STATUSES.get(ticket[3], {}).get("ru", ticket[3])
             markup.add(types.InlineKeyboardButton(f"#{ticket[0]} от {ticket[1]} | {status_text}", callback_data=f"open_ticket_{ticket[0]}"))
         if total_pages > 1:
-            markup.row(
-                types.InlineKeyboardButton(" ", callback_data="ignore"),
-                types.InlineKeyboardButton("Вперёд ▶️", callback_data="tickets_page_1")
-            )
+            markup.row(types.InlineKeyboardButton(" ", callback_data="ignore"), types.InlineKeyboardButton("Вперёд ▶️", callback_data="tickets_page_1"))
         markup.add(types.InlineKeyboardButton("🔙 Назад", callback_data="admin_back_btn"))
         bot.send_message(chat_id, LANGUAGES[lang]["ticket_list_title"].format(1, total_pages), parse_mode="HTML", reply_markup=markup)
         return
@@ -2869,7 +2875,7 @@ def handle_text(message):
             if is_super_admin(user_id):
                 bot.send_message(chat_id, LANGUAGES[lang]["no_password_set"], reply_markup=get_admin_keyboard(user_id))
             else:
-                bot.send_message(chat_id, "Админ-панель недоступна, пароль не установлен.")
+                bot.send_message(chat_id, "Админ-панель недоступна.")
             return
         elif is_admin_session_valid(user_id):
             bot.send_message(chat_id, LANGUAGES[lang]["admin_menu_title"], parse_mode="HTML", reply_markup=get_admin_keyboard(user_id))
@@ -2893,7 +2899,7 @@ def handle_text(message):
 
     if btn_equals(text, "🧯 Обнулить") and is_admin(user_id):
         user_states[user_id] = "awaiting_reset_balance"
-        bot.send_message(chat_id, "📌 Отправьте ID пользователя, баланс которого нужно обнулить.\n\nДля отмены: /cancel", parse_mode="HTML")
+        bot.send_message(chat_id, "📌 Отправьте ID пользователя для обнуления.\n\n/cancel для отмены", parse_mode="HTML")
         return
 
     if btn_equals(text, LANGUAGES[lang]["broadcast"]) and is_admin(user_id):
@@ -2906,29 +2912,23 @@ def handle_text(message):
         return
 
     if btn_equals(text, "🔑 Добавить ключ") and is_super_admin(user_id):
-        bot.send_message(
-            chat_id,
-            "Используйте: <code>/addkey</code> (интерактивно)\n"
-            "или быстрый формат: <code>/addkey ПРОДУКТ ПЕРИОД КЛЮЧ</code>\n"
-            "Пример: <code>/addkey zolo 1d ABC123</code>",
-            parse_mode="HTML"
-        )
+        bot.send_message(chat_id, "Используйте: <code>/addkey</code> (интерактивно)\nили: <code>/addkey ПРОДУКТ ПЕРИОД КЛЮЧ</code>", parse_mode="HTML")
         return
 
     if btn_equals(text, "➕ Добавить админа") and is_super_admin(user_id):
-        bot.send_message(chat_id, "Используйте: <code>/add_admin ID_пользователя</code>", parse_mode="HTML")
+        bot.send_message(chat_id, "Используйте: <code>/add_admin ID</code>", parse_mode="HTML")
         return
 
     if btn_equals(text, "👑 Супер-админ") and is_super_admin(user_id):
-        bot.send_message(chat_id, "Используйте: <code>/add_super_admin ID_пользователя</code>", parse_mode="HTML")
+        bot.send_message(chat_id, "Используйте: <code>/add_super_admin ID</code>", parse_mode="HTML")
         return
 
     if btn_equals(text, "❌ Снять с админки") and is_super_admin(user_id):
-        bot.send_message(chat_id, "Используйте: <code>/remove_admin ID_пользователя</code>", parse_mode="HTML")
+        bot.send_message(chat_id, "Используйте: <code>/remove_admin ID</code>", parse_mode="HTML")
         return
 
     if btn_equals(text, "🔐 Установить пароль админа") and is_super_admin(user_id):
-        bot.send_message(chat_id, "Используйте: <code>/set_admin_password новый_пароль</code>", parse_mode="HTML")
+        bot.send_message(chat_id, "Используйте: <code>/set_admin_password пароль</code>", parse_mode="HTML")
         return
 
     if btn_equals(text, "📊 Наличие") and is_admin(user_id):
@@ -2942,7 +2942,7 @@ def handle_text(message):
         return
 
     if btn_equals(text, "💸 Пополнить") and is_admin(user_id):
-        bot.send_message(chat_id, "Используйте: <code>/add_balance ID_пользователя сумма</code>", parse_mode="HTML")
+        bot.send_message(chat_id, "Используйте: <code>/add_balance ID сумма</code>", parse_mode="HTML")
         return
 
     bot.send_message(chat_id, LANGUAGES[lang]["unknown_command"], reply_markup=get_main_keyboard(user_id))
@@ -2955,37 +2955,25 @@ def handle_text(message):
 def handle_user_photo(message):
     if check_strict_block_and_notify_message(message):
         return
-
     user_id = message.from_user.id
     if not check_user_access(user_id):
         send_access_denied(message)
         return
-
     if user_states.get(user_id) == "deposit_wait_screenshot":
         deposit_id = deposit_context.get(user_id)
         if not deposit_id:
-            bot.send_message(message.chat.id, "❌ Ошибка: не найдена активная заявка. Создайте заявку заново.")
+            bot.send_message(message.chat.id, "❌ Ошибка: не найдена активная заявка.")
             clear_user_state(user_id)
             return
-
         file_id = message.photo[-1].file_id
         if update_deposit_screenshot(deposit_id, file_id):
-            bot.send_message(
-                message.chat.id,
-                LANGUAGES[get_lang(user_id)]["deposit_received_screenshot"].format(deposit_id),
-                parse_mode="HTML"
-            )
+            bot.send_message(message.chat.id, LANGUAGES[get_lang(user_id)]["deposit_received_screenshot"].format(deposit_id), parse_mode="HTML")
         else:
             bot.send_message(message.chat.id, "❌ Не удалось сохранить скриншот.")
         clear_user_state(user_id)
         deposit_context.pop(user_id, None)
         return
-
-    bot.send_message(
-        message.chat.id,
-        "ℹ️ Если хотите создать тикет с фото, используйте команду <code>/ticket [текст]</code> и прикрепите фото.",
-        parse_mode="HTML"
-    )
+    bot.send_message(message.chat.id, "ℹ️ Для тикета с фото используйте <code>/ticket [текст]</code>.", parse_mode="HTML")
 
 
 # ========================================
@@ -2993,7 +2981,6 @@ def handle_user_photo(message):
 # ========================================
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
-    # NEW: строгий выговор — полностью блокируем
     if check_strict_block_and_notify_callback(call):
         return
 
@@ -3003,6 +2990,119 @@ def handle_callback(call):
     lang = get_lang(user_id)
 
     if call.data == "ignore":
+        bot.answer_callback_query(call.id)
+        return
+
+    # ===================================================
+    # === НОВОЕ: СПИСОК ПОКУПОК (пагинация) ===
+    # ===================================================
+    if call.data.startswith("my_purchases_"):
+        # Формат: my_purchases_{page}_{target_uid}
+        parts = call.data.split("_")
+        # my_purchases_1_12345 -> parts = ["my", "purchases", "1", "12345"]
+        page = int(parts[2])
+        target_uid = int(parts[3])
+        show_purchases_page(chat_id, user_id, target_uid, page, edit_msg_id=msg_id)
+        bot.answer_callback_query(call.id)
+        return
+
+    # === НОВОЕ: Деталь позиции ===
+    if call.data.startswith("pur_item_"):
+        # Формат: pur_item_{номер}_{page}_{target_uid}
+        parts = call.data.split("_")
+        item_num = int(parts[2])  # 1-based на странице
+        page = int(parts[3])
+        target_uid = int(parts[4])
+
+        items, _, _, _ = get_user_purchases_paginated(target_uid, page, PURCHASES_PER_PAGE)
+        idx = item_num - 1
+        if 0 <= idx < len(items):
+            p = items[idx]
+            global_num = (page - 1) * PURCHASES_PER_PAGE + item_num
+            key = p.get("key", "—")
+            product = p.get("product", "—")
+            price = p.get("price", 0)
+            date = format_timestamp(p.get("date"))
+            text = LANGUAGES[lang]["purchase_detail"].format(global_num, key, product, price, date)
+            bot.send_message(chat_id, text, parse_mode="HTML")
+        else:
+            bot.answer_callback_query(call.id, LANGUAGES[lang]["purchase_not_found"], show_alert=True)
+        bot.answer_callback_query(call.id)
+        return
+
+    # === НОВОЕ: Поиск покупок ===
+    if call.data.startswith("pur_search_"):
+        target_uid = int(call.data.replace("pur_search_", ""))
+        user_states[user_id] = f"pur_search_awaiting_{target_uid}"
+        bot.send_message(chat_id, LANGUAGES[lang]["enter_search_key"], parse_mode="HTML")
+        bot.answer_callback_query(call.id)
+        return
+
+    # === НОВОЕ: Скачать .txt ===
+    if call.data.startswith("pur_download_"):
+        target_uid = int(call.data.replace("pur_download_", ""))
+        try:
+            content = generate_purchases_txt(target_uid, lang)
+            file = BytesIO(content)
+            file.name = "purchases.txt"
+            bot.send_document(chat_id, file)
+        except Exception as e:
+            logger.error(f"Ошибка генерации .txt: {e}")
+            bot.send_message(chat_id, "⚠️ Ошибка при создании файла.")
+        bot.answer_callback_query(call.id)
+        return
+
+    # ===================================================
+    # === НОВОЕ: АДМИН — СПИСОК ПОЛЬЗОВАТЕЛЕЙ ===
+    # ===================================================
+    if call.data.startswith("adm_users_"):
+        if not is_admin(user_id):
+            bot.answer_callback_query(call.id, "⛔ Доступ запрещён", show_alert=True)
+            return
+        page = int(call.data.replace("adm_users_", ""))
+        show_admin_users_page(chat_id, user_id, page, edit_msg_id=msg_id)
+        bot.answer_callback_query(call.id)
+        return
+
+    # === НОВОЕ: АДМИН — ДЕТАЛЬНЫЙ ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ ===
+    if call.data.startswith("adm_userinfo_"):
+        if not is_admin(user_id):
+            bot.answer_callback_query(call.id, "⛔ Доступ запрещён", show_alert=True)
+            return
+        parts = call.data.split("_")
+        # adm_userinfo_12345_1 -> parts = ["adm", "userinfo", "12345", "1"]
+        target_uid = int(parts[2])
+        from_page = int(parts[3])
+        target_user = get_user_from_db(target_uid)
+        if not target_user:
+            bot.answer_callback_query(call.id, "❌ Пользователь не найден", show_alert=True)
+            return
+        created_at = target_user[6] if target_user and len(target_user) > 6 else "N/A"
+        auth_date = format_timestamp(created_at)
+        balance = format_balance(float(target_user[4] or 0))
+        text = LANGUAGES[lang]["admin_user_profile"].format(auth_date, balance)
+        markup = get_admin_user_detail_keyboard(target_uid, from_page, lang)
+        bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        bot.answer_callback_query(call.id)
+        return
+
+    # === НОВОЕ: АДМИН — НАКАЗАНИЯ ПОЛЬЗОВАТЕЛЯ ===
+    if call.data.startswith("adm_punish_"):
+        if not is_admin(user_id):
+            bot.answer_callback_query(call.id, "⛔ Доступ запрещён", show_alert=True)
+            return
+        target_uid = int(call.data.replace("adm_punish_", ""))
+        punishments = get_user_punishments(target_uid)
+        if not punishments:
+            bot.send_message(chat_id, LANGUAGES[lang]["no_punishments"])
+        else:
+            text = LANGUAGES[lang]["punishments_title"]
+            for p in punishments:
+                p_type, p_desc, p_date = p
+                date_str = format_timestamp(p_date)
+                desc_text = f" — {p_desc}" if p_desc else ""
+                text += f"• <b>{p_type}</b> — {date_str}{desc_text}\n"
+            bot.send_message(chat_id, text, parse_mode="HTML")
         bot.answer_callback_query(call.id)
         return
 
@@ -3019,10 +3119,7 @@ def handle_callback(call):
     if call.data == "addkey_back_products":
         user_states[f"addkey_{user_id}"] = {"step": "product"}
         bot.answer_callback_query(call.id)
-        bot.edit_message_text(
-            "<b>🔑 Добавление ключей</b>\n\nВыберите товар:",
-            chat_id, msg_id, parse_mode="HTML", reply_markup=_addkey_product_keyboard()
-        )
+        bot.edit_message_text("<b>🔑 Добавление ключей</b>\n\nВыберите товар:", chat_id, msg_id, parse_mode="HTML", reply_markup=_addkey_product_keyboard())
         return
 
     if call.data.startswith("addkey_prod_"):
@@ -3035,10 +3132,7 @@ def handle_callback(call):
             return
         user_states[f"addkey_{user_id}"] = {"step": "period", "product": product_key}
         bot.answer_callback_query(call.id)
-        bot.edit_message_text(
-            f"<b>🔑 Добавление ключей</b>\n\nТовар: <b>{PRODUCTS[product_key]['name']}</b>\nВыберите период:",
-            chat_id, msg_id, parse_mode="HTML", reply_markup=_addkey_period_keyboard(product_key)
-        )
+        bot.edit_message_text(f"<b>🔑 Добавление ключей</b>\n\nТовар: <b>{PRODUCTS[product_key]['name']}</b>\nВыберите период:", chat_id, msg_id, parse_mode="HTML", reply_markup=_addkey_period_keyboard(product_key))
         return
 
     if call.data.startswith("addkey_period_"):
@@ -3054,11 +3148,7 @@ def handle_callback(call):
         user_states[f"addkey_{user_id}"] = {"step": "await_keys", "product": product_key, "period": period}
         bot.answer_callback_query(call.id)
         bot.edit_message_text(
-            f"<b>🔑 Добавление ключей</b>\n\n"
-            f"Товар: <b>{PRODUCTS[product_key]['name']}</b>\n"
-            f"Период: <b>{period}</b>\n\n"
-            f"Отправьте ключи одним сообщением:\n"
-            f"— каждый ключ с новой строки",
+            f"<b>🔑 Добавление ключей</b>\n\nТовар: <b>{PRODUCTS[product_key]['name']}</b>\nПериод: <b>{period}</b>\n\nОтправьте ключи — каждый с новой строки:",
             chat_id, msg_id, parse_mode="HTML"
         )
         return
@@ -3066,7 +3156,7 @@ def handle_callback(call):
     # === МЕНЮ ДОСТУПА ===
     if call.data == "access_back":
         if not is_admin(user_id):
-            bot.answer_callback_query(call.id, "⛔ Доступ запрещён")
+            bot.answer_callback_query(call.id, "⛔")
             return
         bot.edit_message_text("<b>🔓 Выдача доступа</b>\n\nВыберите способ:", chat_id, msg_id, parse_mode="HTML", reply_markup=get_access_menu_keyboard())
         bot.answer_callback_query(call.id)
@@ -3074,7 +3164,7 @@ def handle_callback(call):
 
     if call.data == "access_add_user":
         if not is_admin(user_id):
-            bot.answer_callback_query(call.id, "⛔ Доступ запрещён")
+            bot.answer_callback_query(call.id, "⛔")
             return
         user_states[user_id] = "awaiting_user_id_for_access"
         bot.edit_message_text(LANGUAGES[lang]["enter_user_id"], chat_id, msg_id, parse_mode="HTML")
@@ -3083,32 +3173,29 @@ def handle_callback(call):
 
     if call.data == "access_password_menu":
         if not is_admin(user_id):
-            bot.answer_callback_query(call.id, "⛔ Доступ запрещён")
+            bot.answer_callback_query(call.id, "⛔")
             return
-        bot.edit_message_text("<b>🔑 Тип пароля</b>\n\nВыберите тип пароля:", chat_id, msg_id, parse_mode="HTML", reply_markup=get_password_type_keyboard())
+        bot.edit_message_text("<b>🔑 Тип пароля</b>\n\nВыберите тип:", chat_id, msg_id, parse_mode="HTML", reply_markup=get_password_type_keyboard())
         bot.answer_callback_query(call.id)
         return
 
     if call.data == "password_single":
         if not is_admin(user_id):
-            bot.answer_callback_query(call.id, "⛔ Доступ запрещён")
+            bot.answer_callback_query(call.id, "⛔")
             return
         password = generate_access_password("single", 1, user_id)
         if password:
             markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("🔄 Сгенерировать ещё", callback_data="password_single"))
+            markup.add(types.InlineKeyboardButton("🔄 Ещё", callback_data="password_single"))
             markup.add(types.InlineKeyboardButton("🔙 Назад", callback_data="access_password_menu"))
-            bot.edit_message_text(
-                LANGUAGES[lang]["password_generated"].format(password, "Единоразовый", 1),
-                chat_id, msg_id, parse_mode="HTML", reply_markup=markup
-            )
+            bot.edit_message_text(LANGUAGES[lang]["password_generated"].format(password, "Единоразовый", 1), chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
         else:
-            bot.answer_callback_query(call.id, "❌ Ошибка при создании пароля", show_alert=True)
+            bot.answer_callback_query(call.id, "❌ Ошибка", show_alert=True)
         return
 
     if call.data == "password_multi_menu":
         if not is_admin(user_id):
-            bot.answer_callback_query(call.id, "⛔ Доступ запрещён")
+            bot.answer_callback_query(call.id, "⛔")
             return
         bot.edit_message_text(LANGUAGES[lang]["select_max_uses"], chat_id, msg_id, parse_mode="HTML", reply_markup=get_multi_use_keyboard())
         bot.answer_callback_query(call.id)
@@ -3116,20 +3203,17 @@ def handle_callback(call):
 
     if call.data.startswith("password_multi_"):
         if not is_admin(user_id):
-            bot.answer_callback_query(call.id, "⛔ Доступ запрещён")
+            bot.answer_callback_query(call.id, "⛔")
             return
         max_uses = int(call.data.split("_")[-1])
         password = generate_access_password("multi", max_uses, user_id)
         if password:
             markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("🔄 Сгенерировать ещё", callback_data="password_single"))
+            markup.add(types.InlineKeyboardButton("🔄 Ещё", callback_data="password_single"))
             markup.add(types.InlineKeyboardButton("🔙 Назад", callback_data="access_password_menu"))
-            bot.edit_message_text(
-                LANGUAGES[lang]["password_generated"].format(password, f"Многоразовый ({max_uses} использований)", max_uses),
-                chat_id, msg_id, parse_mode="HTML", reply_markup=markup
-            )
+            bot.edit_message_text(LANGUAGES[lang]["password_generated"].format(password, f"Многоразовый ({max_uses})", max_uses), chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
         else:
-            bot.answer_callback_query(call.id, "❌ Ошибка при создании пароля", show_alert=True)
+            bot.answer_callback_query(call.id, "❌ Ошибка", show_alert=True)
         return
 
     # === РАССЫЛКА ===
@@ -3138,11 +3222,10 @@ def handle_callback(call):
             return
         broadcast_text = user_states.pop(f"broadcast_{user_id}", None)
         if not broadcast_text:
-            bot.answer_callback_query(call.id, "❌ Текст для рассылки не найден.")
+            bot.answer_callback_query(call.id, "❌ Текст не найден.")
             return
         bot.answer_callback_query(call.id, LANGUAGES[lang]["broadcast_started"])
         bot.edit_message_text(LANGUAGES[lang]["broadcast_started"], chat_id, msg_id, reply_markup=None)
-
         authorized_users = get_authorized_users()
         sent_count = 0
         for uid in authorized_users:
@@ -3152,7 +3235,6 @@ def handle_callback(call):
                 time.sleep(0.05)
             except Exception:
                 pass
-
         bot.send_message(chat_id, LANGUAGES[lang]["broadcast_completed"].format(sent_count))
         return
 
@@ -3230,10 +3312,7 @@ def handle_callback(call):
             f"{LANGUAGES[lang]['select_qty_title']}"
         )
         markup = types.InlineKeyboardMarkup(row_width=3)
-        buttons = [
-            types.InlineKeyboardButton(f"{i} шт.", callback_data=f"confirm_qty_{product_key}_{period}_{i}")
-            for i in range(1, 6)
-        ]
+        buttons = [types.InlineKeyboardButton(f"{i} шт.", callback_data=f"confirm_qty_{product_key}_{period}_{i}") for i in range(1, 6)]
         markup.add(*buttons)
         category_key = next((k for k, v in CATEGORIES.items() if period in v["periods"]), None)
         if category_key:
@@ -3255,14 +3334,12 @@ def handle_callback(call):
         product_name = PRODUCTS[product_key]["name"]
         full_product_name = f"{product_name} • {display}"
         stock = get_keys_count(product_key, period)
-
         if stock < quantity:
-            bot.answer_callback_query(call.id, "❌ Недостаточно ключей на складе!", show_alert=True)
+            bot.answer_callback_query(call.id, "❌ Недостаточно ключей!", show_alert=True)
             return
-
         confirm_text = LANGUAGES[lang]["confirm_text"].format(full_product_name, quantity, total_price)
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton(f"✅ Подтвердить и купить за {total_price} ₽", callback_data=f"final_buy_{product_key}_{period}_{quantity}"))
+        markup.add(types.InlineKeyboardButton(f"✅ Подтвердить за {total_price} ₽", callback_data=f"final_buy_{product_key}_{period}_{quantity}"))
         markup.add(types.InlineKeyboardButton("🔙 Изменить кол-во", callback_data=f"select_qty_{product_key}_{period}"))
         markup.add(types.InlineKeyboardButton("❌ Отмена", callback_data="back_to_menu"))
         bot.edit_message_text(f"<b>{LANGUAGES[lang]['confirm_title']}</b>\n\n{confirm_text}", chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
@@ -3283,50 +3360,28 @@ def handle_callback(call):
         with purchase_lock:
             user_data = get_user_data(user_id)
             balance = float(user_data.get("balance", 0.0))
-
             if balance < total_price:
                 missing = total_price - balance
-                text = LANGUAGES[lang]["insufficient_funds"].format(
-                    format_balance(balance),
-                    format_balance(total_price),
-                    format_balance(missing)
-                )
-                bot.edit_message_text(
-                    text,
-                    chat_id,
-                    msg_id,
-                    parse_mode="HTML",
-                    reply_markup=get_insufficient_funds_keyboard(user_id)
-                )
+                text = LANGUAGES[lang]["insufficient_funds"].format(format_balance(balance), format_balance(total_price), format_balance(missing))
+                bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=get_insufficient_funds_keyboard(user_id))
                 bot.answer_callback_query(call.id)
                 return
-
             stock = get_keys_count(product_key, period)
             if stock < quantity:
-                bot.answer_callback_query(call.id, "❌ Недостаточно ключей на складе!", show_alert=True)
-                bot.edit_message_text("❌ Недостаточно ключей на складе!", chat_id, msg_id, reply_markup=None)
+                bot.answer_callback_query(call.id, "❌ Недостаточно ключей!", show_alert=True)
+                bot.edit_message_text("❌ Недостаточно ключей!", chat_id, msg_id, reply_markup=None)
                 return
-
             keys = get_available_keys(product_key, period, quantity)
             if not keys or len(keys) < quantity:
-                bot.answer_callback_query(call.id, "❌ Недостаточно ключей на складе!", show_alert=True)
-                bot.edit_message_text("❌ Недостаточно ключей на складе!", chat_id, msg_id, reply_markup=None)
+                bot.answer_callback_query(call.id, "❌ Недостаточно ключей!", show_alert=True)
+                bot.edit_message_text("❌ Недостаточно ключей!", chat_id, msg_id, reply_markup=None)
                 return
-
             new_balance = update_user_balance(user_id, -total_price)
             for key in keys:
                 add_purchase_record(user_id, full_product_name, price, key)
-
             notify_admins_about_purchase(user_id, full_product_name, quantity, total_price, keys)
-
             keys_text = "\n".join([f"<code>{k}</code>" for k in keys])
-            success_text = LANGUAGES[lang]["purchase_success"].format(
-                full_product_name,
-                quantity,
-                format_balance(total_price),
-                format_balance(new_balance),
-                keys_text
-            )
+            success_text = LANGUAGES[lang]["purchase_success"].format(full_product_name, quantity, format_balance(total_price), format_balance(new_balance), keys_text)
             bot.edit_message_text(success_text, chat_id, msg_id, parse_mode="HTML", reply_markup=get_rules_keyboard())
             bot.answer_callback_query(call.id, "✅ Покупка успешна!")
             return
@@ -3334,7 +3389,7 @@ def handle_callback(call):
     # === ДЕПОЗИТЫ ===
     if call.data.startswith("deposit_start_"):
         if int(call.data.split("_")[2]) != user_id:
-            bot.answer_callback_query(call.id, "Вы можете создать заявку только для себя.")
+            bot.answer_callback_query(call.id, "Только для себя.")
             return
         user_states[user_id] = "deposit_wait_amount"
         deposit_context.pop(user_id, None)
@@ -3357,7 +3412,7 @@ def handle_callback(call):
         user_obj = get_user_from_db(deposit[1])
         uname = f"@{user_obj[1]}" if user_obj and user_obj[1] else f"ID {deposit[1]}"
         info_text = (
-            f"📋 <b>ЗАЯВКА НА ПОПОЛНЕНИЕ №{deposit[0]}</b>\n\n"
+            f"📋 <b>ЗАЯВКА №{deposit[0]}</b>\n\n"
             f"👤 Пользователь: {uname}\n"
             f"💵 Сумма: <b>{deposit[2]} ₽</b>\n"
             f"📊 Статус: {deposit[4]}\n"
@@ -3370,13 +3425,7 @@ def handle_callback(call):
                 bot.send_photo(chat_id, screenshot_file_id, caption=info_text, parse_mode="HTML", reply_markup=markup)
                 bot.delete_message(chat_id, msg_id)
             except Exception:
-                bot.edit_message_text(
-                    info_text + "\n\n⚠️ <b>Не удалось загрузить скриншот.</b>",
-                    chat_id,
-                    msg_id,
-                    parse_mode="HTML",
-                    reply_markup=markup
-                )
+                bot.edit_message_text(info_text + "\n\n⚠️ <b>Не удалось загрузить скриншот.</b>", chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
         else:
             bot.edit_message_text(info_text + "\n\n⚠️ <b>Скриншот не прикреплён!</b>", chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
         bot.answer_callback_query(call.id)
@@ -3384,88 +3433,56 @@ def handle_callback(call):
 
     if call.data.startswith("confirm_deposit_") or call.data.startswith("reject_deposit_"):
         if not is_admin(user_id):
-            bot.answer_callback_query(call.id, "⛔ Доступ запрещён", show_alert=True)
+            bot.answer_callback_query(call.id, "⛔", show_alert=True)
             return
-
         try:
             action, deposit_id_str = call.data.split('_', 2)[0], call.data.split('_', 2)[2]
             deposit_id = int(deposit_id_str)
-            logger.info(f"Админ {user_id} начал обработку заявки #{deposit_id} (действие: {action})")
-
             deposit = get_deposit_by_id(deposit_id)
-
             if not deposit:
-                logger.warning(f"Админ {user_id} пытался обработать несуществующую заявку #{deposit_id}")
-                bot.answer_callback_query(call.id, "❌ Заявка не найдена. Возможно, она была удалена.", show_alert=True)
+                bot.answer_callback_query(call.id, "❌ Заявка не найдена.", show_alert=True)
                 try:
                     bot.delete_message(chat_id, msg_id)
                 except Exception:
                     pass
                 show_deposit_requests(chat_id)
                 return
-
             if deposit[4] != 'pending':
-                logger.warning(f"Админ {user_id} пытался обработать уже обработанную заявку #{deposit_id} со статусом '{deposit[4]}'")
-                bot.answer_callback_query(call.id, f"Эта заявка уже была обработана (статус: {deposit[4]}).", show_alert=True)
+                bot.answer_callback_query(call.id, f"Уже обработана ({deposit[4]}).", show_alert=True)
                 return
-
             if action == 'confirm':
                 if update_deposit_status(deposit_id, "confirmed", user_id):
                     target_user_id = int(deposit[1])
                     amount = float(deposit[2])
-
                     new_bal = update_user_balance(target_user_id, amount)
-                    logger.info(f"✅ Заявка #{deposit_id} на {amount}₽ для пользователя {target_user_id} ПОДТВЕРЖДЕНА админом {user_id}.")
-
                     try:
-                        bot.send_message(
-                            target_user_id,
-                            LANGUAGES[get_lang(target_user_id)]["deposit_confirmed_msg"].format(int(amount), int(new_bal)),
-                            parse_mode="HTML",
-                            timeout=10
-                        )
+                        bot.send_message(target_user_id, LANGUAGES[get_lang(target_user_id)]["deposit_confirmed_msg"].format(int(amount), int(new_bal)), parse_mode="HTML", timeout=10)
                     except Exception as e:
-                        logger.error(f"Не удалось отправить уведомление о пополнении пользователю {target_user_id}: {e}")
-
+                        logger.error(f"Ошибка уведомления {target_user_id}: {e}")
                     bot.answer_callback_query(call.id, "✅ Подтверждено!")
                 else:
-                    logger.warning(f"Race condition: Админ {user_id} не смог подтвердить заявку #{deposit_id}, т.к. она была обработана другим процессом.")
-                    bot.answer_callback_query(call.id, "Другой админ уже обработал эту заявку.", show_alert=True)
-
+                    bot.answer_callback_query(call.id, "Уже обработана другим.", show_alert=True)
             elif action == 'reject':
                 if update_deposit_status(deposit_id, "rejected", user_id):
                     target_user_id = int(deposit[1])
-                    logger.info(f"❌ Заявка #{deposit_id} для пользователя {target_user_id} ОТКЛОНЕНА админом {user_id}.")
-
                     try:
-                        bot.send_message(
-                            target_user_id,
-                            LANGUAGES[get_lang(target_user_id)]["deposit_rejected_msg"].format("Проверьте реквизиты и попробуйте снова"),
-                            parse_mode="HTML",
-                            timeout=10
-                        )
+                        bot.send_message(target_user_id, LANGUAGES[get_lang(target_user_id)]["deposit_rejected_msg"].format("Проверьте реквизиты"), parse_mode="HTML", timeout=10)
                     except Exception as e:
-                        logger.error(f"Не удалось отправить уведомление об отклонении заявки пользователю {target_user_id}: {e}")
-
+                        logger.error(f"Ошибка уведомления {target_user_id}: {e}")
                     bot.answer_callback_query(call.id, "❌ Отклонено!")
                 else:
-                    logger.warning(f"Race condition: Админ {user_id} не смог отклонить заявку #{deposit_id}, т.к. она была обработана другим процессом.")
-                    bot.answer_callback_query(call.id, "Другой админ уже обработал эту заявку.", show_alert=True)
-
+                    bot.answer_callback_query(call.id, "Уже обработана другим.", show_alert=True)
             try:
                 bot.delete_message(chat_id, msg_id)
             except Exception:
                 pass
             show_deposit_requests(chat_id)
-
         except Exception as e:
-            logger.error(f"Критическая ошибка при обработке заявки на пополнение {call.data} админом {user_id}: {e}", exc_info=True)
+            logger.error(f"Ошибка обработки депозита {call.data}: {e}", exc_info=True)
             try:
-                bot.answer_callback_query(call.id, "Произошла внутренняя ошибка.", show_alert=True)
-                bot.send_message(chat_id, "Произошла ошибка при обработке заявки. Пожалуйста, проверьте логи.", timeout=10)
-            except Exception as send_err:
-                logger.error(f"Не удалось отправить сообщение об ошибке админу {user_id}: {send_err}")
-
+                bot.answer_callback_query(call.id, "Ошибка.", show_alert=True)
+            except Exception:
+                pass
         return
 
     if call.data == "list_deposits":
@@ -3492,21 +3509,11 @@ def handle_callback(call):
         if ticket[3] == "open":
             update_ticket_status(ticket_id, "in_progress")
             ticket = get_ticket_by_id(ticket_id)
-
         status_text = TICKET_STATUSES.get(ticket[3], {}).get("ru", ticket[3])
         admin_reply = ticket[5] if ticket[5] is not None else "<i>Ответа пока нет</i>"
         bot.edit_message_text(
-            LANGUAGES[lang]["ticket_info_header"].format(
-                ticket_id,
-                ticket[1],
-                format_timestamp(ticket[4]),
-                status_text,
-                safe_text(ticket[2]),
-                safe_text(admin_reply)
-            ),
-            chat_id,
-            msg_id,
-            parse_mode="HTML"
+            LANGUAGES[lang]["ticket_info_header"].format(ticket_id, ticket[1], format_timestamp(ticket[4]), status_text, safe_text(ticket[2]), safe_text(admin_reply)),
+            chat_id, msg_id, parse_mode="HTML"
         )
         bot.send_message(chat_id, LANGUAGES[lang]["ticket_awaiting_reply"])
         user_states[user_id] = f"awaiting_ticket_reply_{ticket_id}"
@@ -3572,12 +3579,9 @@ def handle_callback(call):
         user_states[user_id] = f"awaiting_warn_reason_{stage}"
         bot.edit_message_text(
             f"⚠️ <b>Выдача предупреждения (Уровень {stage})</b>\n\n"
-            f"Отправьте сообщение в формате:\n<code>ID_пользователя причина</code>\n\n"
-            f"<i>Пример: <code>123456789 Нарушение правил чата</code></i>\n\n"
-            f"Для отмены используйте /cancel",
-            chat_id,
-            msg_id,
-            parse_mode="HTML"
+            f"Отправьте: <code>ID_пользователя причина</code>\n\n"
+            f"<i>Пример: <code>123456789 Нарушение правил</code></i>\n\n/cancel для отмены",
+            chat_id, msg_id, parse_mode="HTML"
         )
         bot.answer_callback_query(call.id)
         return
@@ -3585,7 +3589,7 @@ def handle_callback(call):
     # === МОИ ТИКЕТЫ ===
     if call.data == "my_tickets":
         if not check_user_access(user_id):
-            bot.answer_callback_query(call.id, "⛔ Доступ запрещён")
+            bot.answer_callback_query(call.id, "⛔")
             return
         tickets = get_user_tickets(user_id)
         if not tickets:
@@ -3602,9 +3606,6 @@ def handle_callback(call):
 # ЗАПУСК БОТА
 # ========================================
 def main():
-    """
-    Основная функция запуска и управления жизненным циклом бота.
-    """
     try:
         logger.info("Выполняется чистый старт: сброс состояний...")
         global user_states, user_languages, deposit_context
@@ -3616,32 +3617,26 @@ def main():
         refresh_key_files()
         init_admins_database()
 
-        # старт воркера санкций
         Thread(target=sanctions_worker, daemon=True).start()
         logger.info(f"✅ Sanctions worker started. interval={SANCTIONS_CHECK_INTERVAL}s strict_days={STRICT_WARN_DAYS}")
 
-        logger.info("Проверка и удаление вебхука перед запуском...")
+        logger.info("Проверка и удаление вебхука...")
         try:
             webhook_info = bot.get_webhook_info()
             if webhook_info.url:
-                logger.info(f"Обнаружен активный вебхук: {webhook_info.url}. Удаляю...")
+                logger.info(f"Обнаружен вебхук: {webhook_info.url}. Удаляю...")
                 bot.remove_webhook()
-                logger.info("Вебхук успешно удален.")
         except Exception as e:
             logger.error(f"Ошибка при удалении вебхука: {e}")
 
         logger.info("✅ БОТ ГОТОВ К РАБОТЕ")
         logger.info("🔌 Запуск в режиме polling...")
-        bot.infinity_polling(
-            timeout=20,
-            long_polling_timeout=10,
-            skip_pending=True
-        )
+        bot.infinity_polling(timeout=20, long_polling_timeout=10, skip_pending=True)
 
     except KeyboardInterrupt:
-        logger.info("Бот остановлен пользователем (Ctrl+C)")
+        logger.info("Бот остановлен (Ctrl+C)")
     except Exception as e:
-        logger.exception(f"❌ Критическая ошибка при запуске бота: {e}")
+        logger.exception(f"❌ Критическая ошибка: {e}")
         raise
     finally:
         if db_connection:
