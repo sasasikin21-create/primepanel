@@ -9,7 +9,6 @@ import re
 import secrets
 import sqlite3
 import string
-from flask import Flask, request
 import sys
 import time
 from datetime import datetime, timedelta
@@ -32,11 +31,14 @@ PAYMENT_REQUISITES = """🟢 Сбербанк 🟢
 +79085545373
 Александр Валерьевич Ш."""
 
-TMP_DIR = "/tmp"
+TMP_DIR = os.path.join(BASE_DIR, "data")
+os.makedirs(TMP_DIR, exist_ok=True)
+
 DATA_FILE = os.path.join(TMP_DIR, "users_data.json")
 DATABASE_FILE = os.path.join(TMP_DIR, "bot_database.db")
 KEYS_FOLDER = os.path.join(TMP_DIR, "keys")
 LOG_FILE = os.path.join(BASE_DIR, "bot.log")
+ADMIN_LOG_FILE = os.path.join(BASE_DIR, "admin_actions.log")
 
 TICKETS_PER_PAGE = 5
 ADMIN_SESSION_DAYS = 4
@@ -73,6 +75,10 @@ db_lock = Lock()
 storage_lock = Lock()
 key_lock = Lock()
 purchase_lock = Lock()
+cache_lock = Lock()
+
+cache_store: Dict[str, Tuple[float, object]] = {}
+CACHE_TTL = 15
 
 # ========================================
 # ПРОДУКТЫ И ПЕРИОДЫ
@@ -104,6 +110,14 @@ PERIOD_DISPLAY = {
     "7d": "7 DAYS",
     "14d": "14 DAYS",
     "30d": "30 DAYS"
+}
+
+REVIEW_PERIOD_DISPLAY_RU = {
+    "1d": "1 День",
+    "3d": "3 Дня",
+    "7d": "7 Дней",
+    "14d": "14 Дней",
+    "30d": "30 Дней"
 }
 
 ADDKEY_PRODUCT_ORDER = ["primehack", "zolo", "dexo"]
@@ -204,7 +218,6 @@ LANGUAGES = {
         "choose_product": "Выберите товар:",
         "choose_category": "Выберите категорию:",
         "choose_subscription": "Выберите подписку:",
-        # === НОВЫЕ ТЕКСТЫ ===
         "my_purchases_title": "🛒 <b>Мои покупки</b>",
         "total_spent": "💰 Итого потрачено: <b>{} ₽</b>",
         "page_info": "📄 Стр. {}/{}",
@@ -228,6 +241,26 @@ LANGUAGES = {
         "no_punishments": "✅ Наказаний не обнаружено.",
         "btn_users": "👥 Пользователи",
         "shopping_list_btn": "📚 Список покупок",
+        "main_my_purchases": "📋 Мои покупки",
+        "send_review": "⭐️ Отправить отзыв",
+        "review_choose_category": "📂 Выберите категорию товара:",
+        "review_choose_period": "Товар: {}. Выберите период:",
+        "review_photo_received": "✅ Фото получено!",
+        "review_sent_success": "✅ Отзыв отправлен на проверку!\n\n🆔 ID отзыва: {}\n📦 Товар: {}\n⏳ Ожидайте одобрения администратором. После одобрения вы получите ключ!",
+        "review_admin_notify": "🔔 <b>НОВЫЙ ОТЗЫВ #{}</b>\n\n👤 Пользователь ID: {}\n📦 Товар: {}\n⏰ Время: {}",
+        "reviews_list_btn": "🧳 Список отзывов",
+        "reviews_list_title": "🧳 <b>Список отзывов в ожидании</b>",
+        "reviews_empty": "ℹ️ Отзывов в ожидании нет.",
+        "review_info_title": "📋 <b>ИНФОРМАЦИЯ ПО ОТЗЫВУ №{}</b>\n\n👤 Пользователь ID: {}\n📅 Создан: {}\n🚦 Статус: {}\n🛒 Товар: {}",
+        "review_approve_btn": "✅ Одобрить",
+        "review_reject_btn": "❌ Отклонить",
+        "review_rejected_user": "❌ Ваш отзыв № {} отклонён.\n📦 Товар: {}.\nК сожалению, ваш отзыв не прошёл модерацию.",
+        "review_approved_user": "🎉 Ваш отзыв № {} одобрен!\n📦 Товар: {}.\n🔑 Ваш ключ: {}\n✨ Спасибо за отзыв!",
+        "review_enter_key": "🔑 Введите ключ для отзыва № {}.\n\nПользователь получит его после подтверждения.",
+        "review_status_pending": "В ожидании",
+        "review_status_approved": "Одобрен",
+        "review_status_rejected": "Отклонён",
+        "review_cancel_btn": "❌ Отмена",
     },
     "en": {
         "welcome": "👋 Hello! Choose section:",
@@ -304,9 +337,8 @@ LANGUAGES = {
         "choose_product": "Choose product:",
         "choose_category": "Choose category:",
         "choose_subscription": "Choose subscription:",
-        # === NEW TEXTS ===
         "my_purchases_title": "🛒 <b>My Purchases</b>",
-        "total_spent": "💰 Total spent: <b>${}</b>",
+        "total_spent": "💰 Total spent: <b>{}</b>",
         "page_info": "📄 Page {}/{}",
         "no_purchases": "📭 You have no purchases yet.",
         "purchase_detail": "📦 <b>Purchase #{}</b>\n\n🔑 Key: <code>{}</code>\n📋 Item: {}\n💲 Price: {} ₽\n📅 Date: {}",
@@ -321,13 +353,33 @@ LANGUAGES = {
         "search_results": "🔍 <b>Search results:</b>\n\n",
         "search_empty": "🔍 Nothing found.",
         "admin_users_title": "👥 <b>Users ({})</b>",
-        "admin_user_profile": "👤 <b>User Profile</b>\n\nℹ️ Authorized at — {}\n💳 Balance: <b>${}</b>",
+        "admin_user_profile": "👤 <b>User Profile</b>\n\nℹ️ Authorized at — {}\n💳 Balance: <b>{}</b>",
         "btn_user_purchases": "🛍 Shopping List",
         "btn_user_punishments": "❌ Punishments List",
         "punishments_title": "❌ <b>Punishments list</b>\n\n",
         "no_punishments": "✅ No punishments found.",
         "btn_users": "👥 Users",
         "shopping_list_btn": "📚 Shopping List",
+        "main_my_purchases": "📋 My Purchases",
+        "send_review": "⭐️ Send review",
+        "review_choose_category": "📂 Choose product category:",
+        "review_choose_period": "Product: {}. Choose period:",
+        "review_photo_received": "✅ Photo received!",
+        "review_sent_success": "✅ Review sent for moderation!\n\n🆔 Review ID: {}\n📦 Product: {}\n⏳ Wait for admin approval. After approval you will receive a key!",
+        "review_admin_notify": "🔔 <b>NEW REVIEW #{}</b>\n\n👤 User ID: {}\n📦 Product: {}\n⏰ Time: {}",
+        "reviews_list_btn": "🧳 Reviews list",
+        "reviews_list_title": "🧳 <b>Pending reviews</b>",
+        "reviews_empty": "ℹ️ No pending reviews.",
+        "review_info_title": "📋 <b>REVIEW INFO №{}</b>\n\n👤 User ID: {}\n📅 Created: {}\n🚦 Status: {}\n🛒 Product: {}",
+        "review_approve_btn": "✅ Approve",
+        "review_reject_btn": "❌ Reject",
+        "review_rejected_user": "❌ Your review № {} was rejected.\n📦 Product: {}.\nUnfortunately, your review did not pass moderation.",
+        "review_approved_user": "🎉 Your review № {} was approved!\n📦 Product: {}.\n🔑 Your key: {}\n✨ Thank you for your review!",
+        "review_enter_key": "🔑 Enter the key for review № {}.\n\nThe user will receive it after confirmation.",
+        "review_status_pending": "Pending",
+        "review_status_approved": "Approved",
+        "review_status_rejected": "Rejected",
+        "review_cancel_btn": "❌ Cancel",
     }
 }
 
@@ -401,6 +453,46 @@ def clear_user_state(user_id: int):
     user_states.pop(user_id, None)
     user_states.pop(f"broadcast_{user_id}", None)
     user_states.pop(f"addkey_{user_id}", None)
+
+
+def cache_get(key: str):
+    with cache_lock:
+        item = cache_store.get(key)
+        if not item:
+            return None
+        expires_at, value = item
+        if time.time() > expires_at:
+            cache_store.pop(key, None)
+            return None
+        return value
+
+
+def cache_set(key: str, value, ttl: int = CACHE_TTL):
+    with cache_lock:
+        cache_store[key] = (time.time() + ttl, value)
+
+
+def cache_invalidate(prefix: str):
+    with cache_lock:
+        for k in list(cache_store.keys()):
+            if k.startswith(prefix) or k == prefix:
+                cache_store.pop(k, None)
+
+
+def mask_key(key: str) -> str:
+    if not key:
+        return ""
+    if len(key) <= 6:
+        return "***"
+    return key[:3] + "***" + key[-3:]
+
+
+def log_admin_action(admin_id: int, action: str):
+    try:
+        with open(ADMIN_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now().isoformat()} | admin={admin_id} | {action}\n")
+    except Exception as e:
+        logger.error(f"Ошибка записи admin_actions.log: {e}")
 
 
 # ========================================
@@ -538,13 +630,26 @@ def init_database():
                 created_ts INTEGER NOT NULL,
                 FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
             )""",
-            # === НОВАЯ ТАБЛИЦА: НАКАЗАНИЯ ===
             """CREATE TABLE IF NOT EXISTS punishments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 punishment_type TEXT NOT NULL,
                 description TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
+            )""",
+            """CREATE TABLE IF NOT EXISTS reviews (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                screenshot_file_id TEXT NOT NULL,
+                product_key TEXT NOT NULL,
+                period TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+                admin_id INTEGER DEFAULT NULL,
+                admin_comment TEXT DEFAULT NULL,
+                issued_key TEXT DEFAULT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                processed_at DATETIME DEFAULT NULL,
                 FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
             )"""
         ]
@@ -563,6 +668,8 @@ def init_database():
             "CREATE INDEX IF NOT EXISTS idx_password_uses_password_id ON password_uses(password_id)",
             "CREATE INDEX IF NOT EXISTS idx_strict_sanctions_until ON strict_sanctions(until_ts)",
             "CREATE INDEX IF NOT EXISTS idx_punishments_user_id ON punishments(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_reviews_status ON reviews(status)",
+            "CREATE INDEX IF NOT EXISTS idx_reviews_user_id ON reviews(user_id)",
         ]
         for sql in indexes:
             cursor.execute(sql)
@@ -784,7 +891,6 @@ def get_all_users() -> List[int]:
     return [row[0] for row in cursor.fetchall()]
 
 
-# === НОВОЕ: получить пользователей с пагинацией для админ-панели ===
 @safe_db_operation
 def get_all_users_paginated(page: int = 1, per_page: int = USERS_PER_PAGE) -> List[Tuple]:
     conn = get_db_connection()
@@ -802,11 +908,16 @@ def get_all_users_paginated(page: int = 1, per_page: int = USERS_PER_PAGE) -> Li
 
 @safe_db_operation
 def get_authorized_users_count() -> int:
+    cached = cache_get("authorized_users_count")
+    if cached is not None:
+        return cached
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM access_grants")
     result = cursor.fetchone()
-    return result[0] if result else 0
+    count = result[0] if result else 0
+    cache_set("authorized_users_count", count, 10)
+    return count
 
 
 @safe_db_operation
@@ -860,6 +971,7 @@ def add_to_admin(role: str, user_id: int) -> bool:
     cursor = conn.cursor()
     cursor.execute("INSERT OR REPLACE INTO admins (user_id, role) VALUES (?, ?)", (user_id, role))
     conn.commit()
+    cache_invalidate("authorized_users_count")
     return True
 
 
@@ -870,6 +982,7 @@ def remove_from_admin(user_id: int) -> bool:
     cursor.execute("DELETE FROM admins WHERE user_id = ?", (user_id,))
     cursor.execute("DELETE FROM admin_sessions WHERE user_id = ?", (user_id,))
     conn.commit()
+    cache_invalidate("authorized_users_count")
     return True
 
 
@@ -1024,7 +1137,6 @@ def apply_strict_sanction(user_id: int, admin_id: int):
     """, (user_id, until_ts, restore_access, admin_id, created_ts))
     conn.commit()
 
-    # === НОВОЕ: записываем наказание в таблицу punishments ===
     add_punishment(user_id, "Строгий выговор", f"Блокировка до {datetime.fromtimestamp(until_ts).strftime('%d.%m.%Y %H:%M')}. Выдал: {admin_id}")
 
 
@@ -1072,7 +1184,7 @@ def sanctions_worker():
 
 
 # ========================================
-# НАКАЗАНИЯ (НОВОЕ)
+# НАКАЗАНИЯ
 # ========================================
 @safe_db_operation
 def add_punishment(user_id: int, punishment_type: str, description: str = "") -> bool:
@@ -1100,10 +1212,9 @@ def get_user_punishments(user_id: int) -> List[Tuple]:
 
 
 # ========================================
-# ПОКУПКИ ИЗ JSON (НОВОЕ — пагинация + поиск)
+# ПОКУПКИ ИЗ JSON
 # ========================================
 def get_user_purchases_from_json(user_id: int) -> List[dict]:
-    """Получить все покупки пользователя из JSON."""
     with storage_lock:
         data = load_users_data()
         uid = str(user_id)
@@ -1113,7 +1224,6 @@ def get_user_purchases_from_json(user_id: int) -> List[dict]:
 
 
 def get_user_purchases_paginated(user_id: int, page: int = 1, per_page: int = PURCHASES_PER_PAGE) -> Tuple[List[dict], int, int, float]:
-    """Возвращает (список покупок на странице, всего покупок, всего страниц, сумма)."""
     all_purchases = get_user_purchases_from_json(user_id)
     total_count = len(all_purchases)
     total_pages = max(1, math.ceil(total_count / per_page))
@@ -1125,7 +1235,6 @@ def get_user_purchases_paginated(user_id: int, page: int = 1, per_page: int = PU
 
 
 def search_user_purchases(user_id: int, query: str) -> List[dict]:
-    """Поиск покупок по ключу."""
     all_purchases = get_user_purchases_from_json(user_id)
     query_lower = query.lower().strip()
     results = []
@@ -1137,7 +1246,6 @@ def search_user_purchases(user_id: int, query: str) -> List[dict]:
 
 
 def generate_purchases_txt(user_id: int, lang: str) -> bytes:
-    """Генерация .txt файла со списком покупок."""
     all_purchases = get_user_purchases_from_json(user_id)
     total_spent = sum(float(p.get("price", 0)) for p in all_purchases)
     lines = []
@@ -1239,6 +1347,7 @@ def check_and_use_password(password_text: str, user_id: int) -> bool:
             cursor.execute("UPDATE access_passwords SET current_uses = ?, is_active = ? WHERE id = ?", (new_uses, new_active, password_id))
             conn.commit()
             sync_user_to_json_from_db(user_id)
+            cache_invalidate("authorized_users_count")
             return True
         except sqlite3.Error as e:
             conn.rollback()
@@ -1401,13 +1510,19 @@ def refresh_key_files():
 
 
 def get_keys_count(product_key: str, period: str) -> int:
+    cache_key = f"keys_count_{product_key}_{period}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
     with key_lock:
         path = resolve_key_file(product_key, period)
         if not os.path.exists(path):
             return 0
         try:
             with open(path, "r", encoding="utf-8") as f:
-                return len([line.strip() for line in f if line.strip()])
+                count = len([line.strip() for line in f if line.strip()])
+                cache_set(cache_key, count, 5)
+                return count
         except IOError as e:
             logger.error(f"Ошибка чтения файла ключей {path}: {e}")
             return 0
@@ -1428,6 +1543,7 @@ def get_available_keys(product_key: str, period: str, quantity: int) -> List[str
             with open(path, "w", encoding="utf-8") as f:
                 if remaining:
                     f.write("\n".join(remaining) + "\n")
+            cache_invalidate(f"keys_count_{product_key}_{period}")
             return taken
         except IOError as e:
             logger.error(f"Ошибка работы с файлом ключей {path}: {e}")
@@ -1444,6 +1560,7 @@ def add_key_to_file(product_key: str, period: str, key: str) -> bool:
         with key_lock:
             with open(path, "a", encoding="utf-8") as f:
                 f.write(key.strip() + "\n")
+        cache_invalidate(f"keys_count_{product_key}_{period}")
         return True
     except IOError as e:
         logger.error(f"Ошибка добавления ключа в файл {path}: {e}")
@@ -1468,6 +1585,7 @@ def add_keys_bulk_to_file(product_key: str, period: str, keys: List[str]) -> int
         with key_lock:
             with open(path, "a", encoding="utf-8") as f:
                 f.write("\n".join(cleaned) + "\n")
+        cache_invalidate(f"keys_count_{product_key}_{period}")
         return len(cleaned)
     except IOError as e:
         logger.error(f"Ошибка массового добавления ключей в файл {path}: {e}")
@@ -1666,12 +1784,10 @@ def issue_warning(user_id: int, stage: int, reason: str, admin_id: int) -> Optio
         new_balance = old_balance
 
         if stage == 1:
-            # === НОВОЕ: запись наказания ===
             add_punishment(user_id, "Предупреждение", f"Причина: {reason}. Выдал: {admin_id}")
         elif stage == 2:
             deduction = old_balance * 0.3
             new_balance = update_user_balance(user_id, -deduction)
-            # === НОВОЕ: запись наказания ===
             add_punishment(user_id, "Выговор (-30% баланса)", f"Причина: {reason}. Списано: {format_balance(deduction)} ₽. Выдал: {admin_id}")
         elif stage == 3:
             cursor.execute("UPDATE users SET strict_warning_active = 1 WHERE user_id = ?", (user_id,))
@@ -1797,13 +1913,135 @@ def show_deposit_requests(chat_id: int):
 
 
 # ========================================
+# ОТЗЫВЫ
+# ========================================
+@safe_db_operation
+def create_review(user_id: int, screenshot_file_id: str, product_key: str, period: str) -> int:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO reviews (user_id, screenshot_file_id, product_key, period, status)
+        VALUES (?, ?, ?, ?, 'pending')
+    """, (user_id, screenshot_file_id, product_key, period))
+    conn.commit()
+    cache_invalidate("reviews_pending")
+    return cursor.lastrowid
+
+
+@safe_db_operation
+def get_review_by_id(review_id: int) -> Optional[Tuple]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, user_id, screenshot_file_id, product_key, period, status, admin_id,
+               admin_comment, issued_key, created_at, processed_at
+        FROM reviews
+        WHERE id = ?
+    """, (review_id,))
+    return cursor.fetchone()
+
+
+@safe_db_operation
+def get_pending_reviews() -> List[Tuple]:
+    cached = cache_get("reviews_pending")
+    if cached is not None:
+        return cached
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, user_id, product_key, period, created_at
+        FROM reviews
+        WHERE status = 'pending'
+        ORDER BY created_at DESC
+    """)
+    rows = cursor.fetchall()
+    cache_set("reviews_pending", rows, 10)
+    return rows
+
+
+@safe_db_operation
+def update_review_status(review_id: int, status: str, admin_id: int = None, issued_key: str = None, admin_comment: str = None) -> bool:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE reviews
+        SET status = ?,
+            admin_id = ?,
+            issued_key = COALESCE(?, issued_key),
+            admin_comment = COALESCE(?, admin_comment),
+            processed_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND status = 'pending'
+    """, (status, admin_id, issued_key, admin_comment, review_id))
+    conn.commit()
+    cache_invalidate("reviews_pending")
+    return cursor.rowcount > 0
+
+
+def get_review_product_display(product_key: str, period: str) -> str:
+    product_name = PRODUCTS.get(product_key, {}).get("name", product_key)
+    period_name = REVIEW_PERIOD_DISPLAY_RU.get(period, period)
+    return f"{product_name} — {period_name}"
+
+
+def get_review_status_text(status: str, lang: str = "ru") -> str:
+    if status == "pending":
+        return LANGUAGES[lang]["review_status_pending"]
+    if status == "approved":
+        return LANGUAGES[lang]["review_status_approved"]
+    if status == "rejected":
+        return LANGUAGES[lang]["review_status_rejected"]
+    return status
+
+
+def notify_admins_about_new_review(review_id: int, user_id: int, product_text: str):
+    for admin_id in get_all_admins():
+        try:
+            bot.send_message(
+                admin_id,
+                LANGUAGES[get_lang(admin_id)]["review_admin_notify"].format(
+                    review_id, user_id, product_text, format_timestamp()
+                ),
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.error(f"Ошибка уведомления админа {admin_id} о новом отзыве: {e}")
+
+
+def show_pending_reviews(chat_id: int, user_id: int, edit_msg_id: int = None):
+    lang = get_lang(user_id)
+    reviews = get_pending_reviews()
+    if not reviews:
+        text = LANGUAGES[lang]["reviews_empty"]
+        if edit_msg_id:
+            try:
+                bot.edit_message_text(text, chat_id, edit_msg_id)
+            except Exception:
+                bot.send_message(chat_id, text)
+        else:
+            bot.send_message(chat_id, text)
+        return
+
+    text = LANGUAGES[lang]["reviews_list_title"]
+    markup = get_reviews_list_keyboard(reviews)
+
+    if edit_msg_id:
+        try:
+            bot.edit_message_text(text, chat_id, edit_msg_id, parse_mode="HTML", reply_markup=markup)
+        except Exception:
+            bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+    else:
+        bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+
+
+# ========================================
 # КЛАВИАТУРЫ
 # ========================================
 def get_main_keyboard(user_id: int) -> types.ReplyKeyboardMarkup:
     lang = get_lang(user_id)
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row(LANGUAGES[lang]["products"], LANGUAGES[lang]["profile"])
-    kb.row(LANGUAGES[lang]["settings"], LANGUAGES[lang]["support"])
+    kb.row(LANGUAGES[lang]["main_my_purchases"], LANGUAGES[lang]["support"])
+    kb.row(LANGUAGES[lang]["settings"])
     if is_admin(user_id):
         kb.row(LANGUAGES[lang]["admin_panel"])
     return kb
@@ -1850,7 +2088,6 @@ def get_profile_keyboard(user_id: int) -> types.InlineKeyboardMarkup:
     lang = get_lang(user_id)
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(types.InlineKeyboardButton("💳 Создать заявку на баланс", callback_data=f"deposit_start_{user_id}"))
-    # === НОВОЕ: кнопка Список покупок в профиле ===
     markup.add(types.InlineKeyboardButton(LANGUAGES[lang]["shopping_list_btn"], callback_data=f"my_purchases_1_{user_id}"))
     markup.add(types.InlineKeyboardButton(LANGUAGES[lang]["my_tickets"], callback_data="my_tickets"))
     markup.add(types.InlineKeyboardButton("🔙 Назад в меню", callback_data="back_to_menu"))
@@ -1892,7 +2129,7 @@ def get_admin_keyboard(user_id: int) -> types.ReplyKeyboardMarkup:
     kb.add("📊 Наличие", "💸 Пополнить", "🧯 Обнулить", "🔓 Выдать доступ", "⚖️ Выдать варн",
            LANGUAGES[lang]["ticket_view_list"])
     kb.add(LANGUAGES[lang]["broadcast"], LANGUAGES[lang]["check_deposits_btn"])
-    # === НОВОЕ: кнопка Пользователи ===
+    kb.add(LANGUAGES[lang]["reviews_list_btn"])
     kb.add(LANGUAGES[lang]["btn_users"])
     if is_super_admin(user_id):
         kb.add("🔑 Добавить ключ", "➕ Добавить админа", "👑 Супер-админ", "❌ Снять с админки",
@@ -1901,13 +2138,10 @@ def get_admin_keyboard(user_id: int) -> types.ReplyKeyboardMarkup:
     return kb
 
 
-# === НОВОЕ: клавиатура списка покупок ===
-def get_purchases_keyboard(page: int, total_pages: int, lang: str, target_uid: int) -> types.InlineKeyboardMarkup:
+def get_purchases_keyboard(page: int, total_pages: int, lang: str, target_uid: int, viewer_uid: int = None) -> types.InlineKeyboardMarkup:
     markup = types.InlineKeyboardMarkup(row_width=5)
-    # Кнопки №1-№5
     nums = [types.InlineKeyboardButton(str(i), callback_data=f"pur_item_{i}_{page}_{target_uid}") for i in range(1, 6)]
     markup.row(*nums)
-    # Навигация
     nav = []
     if page > 1:
         nav.append(types.InlineKeyboardButton(LANGUAGES[lang]["btn_prev"], callback_data=f"my_purchases_{page - 1}_{target_uid}"))
@@ -1915,11 +2149,12 @@ def get_purchases_keyboard(page: int, total_pages: int, lang: str, target_uid: i
         nav.append(types.InlineKeyboardButton(LANGUAGES[lang]["btn_next"], callback_data=f"my_purchases_{page + 1}_{target_uid}"))
     if nav:
         markup.row(*nav)
-    # Действия
     markup.row(
         types.InlineKeyboardButton(LANGUAGES[lang]["btn_search_key"], callback_data=f"pur_search_{target_uid}"),
         types.InlineKeyboardButton(LANGUAGES[lang]["btn_download_txt"], callback_data=f"pur_download_{target_uid}")
     )
+    if viewer_uid == target_uid:
+        markup.row(types.InlineKeyboardButton(LANGUAGES[lang]["send_review"], callback_data=f"review_start_{target_uid}"))
     markup.row(
         types.InlineKeyboardButton(LANGUAGES[lang]["btn_refresh_list"], callback_data=f"my_purchases_1_{target_uid}"),
         types.InlineKeyboardButton(LANGUAGES[lang]["btn_to_catalog"], callback_data="back_to_menu")
@@ -1927,7 +2162,6 @@ def get_purchases_keyboard(page: int, total_pages: int, lang: str, target_uid: i
     return markup
 
 
-# === НОВОЕ: клавиатура списка пользователей (админ) ===
 def get_admin_users_keyboard(users: List[Tuple], page: int, total_pages: int, lang: str) -> types.InlineKeyboardMarkup:
     markup = types.InlineKeyboardMarkup(row_width=1)
     for u in users:
@@ -1950,7 +2184,6 @@ def get_admin_users_keyboard(users: List[Tuple], page: int, total_pages: int, la
     return markup
 
 
-# === НОВОЕ: клавиатура детального профиля пользователя (админ) ===
 def get_admin_user_detail_keyboard(target_uid: int, from_page: int, lang: str) -> types.InlineKeyboardMarkup:
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(types.InlineKeyboardButton(LANGUAGES[lang]["btn_user_purchases"], callback_data=f"my_purchases_1_{target_uid}"))
@@ -2033,6 +2266,47 @@ def _addkey_period_keyboard(product_key: str) -> types.InlineKeyboardMarkup:
     return kb
 
 
+def get_review_category_keyboard(lang: str = "ru") -> types.InlineKeyboardMarkup:
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(types.InlineKeyboardButton("🔷 PRIMEHACK", callback_data="review_product_primehack"))
+    markup.add(types.InlineKeyboardButton(LANGUAGES[lang]["review_cancel_btn"], callback_data="review_cancel"))
+    return markup
+
+
+def get_review_period_keyboard(product_key: str, lang: str = "ru") -> types.InlineKeyboardMarkup:
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    if product_key == "primehack":
+        markup.add(types.InlineKeyboardButton("🔷 PRIMEHACK — 1 День", callback_data="review_period_primehack_1d"))
+        markup.add(types.InlineKeyboardButton("🔷 PRIMEHACK — 3 Дня", callback_data="review_period_primehack_3d"))
+        markup.add(types.InlineKeyboardButton("🔷 PRIMEHACK — 7 Дней", callback_data="review_period_primehack_7d"))
+    markup.add(types.InlineKeyboardButton(LANGUAGES[lang]["review_cancel_btn"], callback_data="review_cancel"))
+    return markup
+
+
+def get_reviews_admin_keyboard(review_id: int, lang: str = "ru") -> types.InlineKeyboardMarkup:
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.row(
+        types.InlineKeyboardButton(LANGUAGES[lang]["review_approve_btn"], callback_data=f"review_approve_{review_id}"),
+        types.InlineKeyboardButton(LANGUAGES[lang]["review_reject_btn"], callback_data=f"review_reject_{review_id}")
+    )
+    markup.add(types.InlineKeyboardButton("🔙 Назад", callback_data="reviews_list"))
+    return markup
+
+
+def get_reviews_list_keyboard(reviews: List[Tuple]) -> types.InlineKeyboardMarkup:
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    for review_id, user_id, product_key, period, created_at in reviews:
+        product_text = get_review_product_display(product_key, period)
+        markup.add(
+            types.InlineKeyboardButton(
+                f"#{review_id} | {user_id} | {product_text}",
+                callback_data=f"review_view_{review_id}"
+            )
+        )
+    markup.add(types.InlineKeyboardButton("🔙 Назад", callback_data="admin_back_btn"))
+    return markup
+
+
 # ========================================
 # ПРОВЕРКА ДОСТУПА
 # ========================================
@@ -2047,10 +2321,9 @@ def send_access_denied(message):
 
 
 # ========================================
-# === НОВОЕ: ФУНКЦИЯ ПОКАЗА СПИСКА ПОКУПОК ===
+# ПОКАЗ СПИСКОВ
 # ========================================
 def show_purchases_page(chat_id: int, user_id: int, target_uid: int, page: int, edit_msg_id: int = None):
-    """Универсальная функция показа страницы покупок."""
     lang = get_lang(user_id)
     try:
         items, total_count, total_pages, total_spent = get_user_purchases_paginated(target_uid, page, PURCHASES_PER_PAGE)
@@ -2076,7 +2349,7 @@ def show_purchases_page(chat_id: int, user_id: int, target_uid: int, page: int, 
             product = p.get("product", "—")
             text += f"<b>{num}.</b> <code>{key}</code> | {product}\n"
 
-        markup = get_purchases_keyboard(page, total_pages, lang, target_uid)
+        markup = get_purchases_keyboard(page, total_pages, lang, target_uid, viewer_uid=user_id)
 
         if edit_msg_id:
             bot.edit_message_text(text, chat_id, edit_msg_id, parse_mode="HTML", reply_markup=markup)
@@ -2088,9 +2361,7 @@ def show_purchases_page(chat_id: int, user_id: int, target_uid: int, page: int, 
         bot.send_message(chat_id, "⚠️ Ошибка при загрузке списка покупок.")
 
 
-# === НОВОЕ: ФУНКЦИЯ ПОКАЗА СПИСКА ПОЛЬЗОВАТЕЛЕЙ (АДМИН) ===
 def show_admin_users_page(chat_id: int, user_id: int, page: int, edit_msg_id: int = None):
-    """Показ списка пользователей для админки."""
     lang = get_lang(user_id)
     try:
         total = get_authorized_users_count()
@@ -2553,7 +2824,6 @@ def cmd_help(message):
     if not check_user_access(user_id):
         send_access_denied(message)
         return
-    lang = get_lang(user_id)
     help_text = "<b>ℹ️ Доступные команды:</b>\n"
     help_text += "/start - <i>Начало работы</i>\n"
     help_text += "/login - <i>Ввод пароля доступа</i>\n"
@@ -2595,7 +2865,6 @@ def handle_text(message):
     if text.lstrip().startswith("/"):
         return
 
-    # интерактивный /addkey
     addkey_state = user_states.get(f"addkey_{user_id}")
     if addkey_state and isinstance(addkey_state, dict) and addkey_state.get("step") == "await_keys":
         product_key = addkey_state["product"]
@@ -2616,7 +2885,6 @@ def handle_text(message):
         send_access_denied(message)
         return
 
-    # === НОВОЕ: состояние поиска покупок ===
     if current_state and isinstance(current_state, str) and current_state.startswith("pur_search_awaiting_"):
         target_uid = int(current_state.replace("pur_search_awaiting_", ""))
         query = text.strip()
@@ -2636,7 +2904,6 @@ def handle_text(message):
             bot.send_message(chat_id, result_text, parse_mode="HTML")
         return
 
-    # СОСТОЯНИЯ
     if current_state:
         if current_state in ("waiting_for_password", "awaiting_access_password"):
             handle_login(message)
@@ -2660,6 +2927,7 @@ def handle_text(message):
                     pass
                 username = f"@{target_user[1]}" if target_user[1] else f"ID {target_id}"
                 bot.send_message(chat_id, LANGUAGES[lang]["access_granted_admin"].format(username), parse_mode="HTML")
+                cache_invalidate("authorized_users_count")
             else:
                 bot.send_message(chat_id, "❌ Ошибка при выдаче доступа!")
             clear_user_state(user_id)
@@ -2794,7 +3062,45 @@ def handle_text(message):
             bot.send_message(chat_id, f"{LANGUAGES[lang]['broadcast_confirm']}\n\n<i>Ваше сообщение:</i>\n{text}", parse_mode="HTML", reply_markup=markup)
             return
 
-    # КНОПКИ
+        if isinstance(current_state, str) and current_state.startswith("awaiting_review_key_"):
+            if not is_admin(user_id):
+                clear_user_state(user_id)
+                bot.send_message(chat_id, "⛔ Доступ запрещён.")
+                return
+
+            review_id = int(current_state.replace("awaiting_review_key_", ""))
+            review = get_review_by_id(review_id)
+            if not review:
+                clear_user_state(user_id)
+                bot.send_message(chat_id, "❌ Отзыв не найден.")
+                return
+
+            key_text = text.strip()
+            if not key_text:
+                bot.send_message(chat_id, "❌ Ключ не может быть пустым.")
+                return
+
+            product_text = get_review_product_display(review[3], review[4])
+            ok = update_review_status(review_id, "approved", admin_id=user_id, issued_key=key_text)
+            clear_user_state(user_id)
+
+            if not ok:
+                bot.send_message(chat_id, "❌ Не удалось одобрить отзыв. Возможно, он уже обработан.")
+                return
+
+            try:
+                target_lang = get_lang(review[1])
+                bot.send_message(
+                    review[1],
+                    LANGUAGES[target_lang]["review_approved_user"].format(review_id, product_text, key_text)
+                )
+            except Exception as e:
+                logger.error(f"Ошибка отправки ключа пользователю {review[1]}: {e}")
+
+            log_admin_action(user_id, f"approved_review review_id={review_id} user_id={review[1]} product='{product_text}' key='{mask_key(key_text)}'")
+            bot.send_message(chat_id, f"✅ Отзыв #{review_id} одобрен. Ключ отправлен пользователю.", reply_markup=get_admin_keyboard(user_id))
+            return
+
     if btn_equals(text, LANGUAGES[lang]["top_up_balance"]):
         user_states[user_id] = "deposit_wait_amount"
         bot.send_message(chat_id, LANGUAGES[lang]["deposit_wait_amount"], parse_mode="HTML")
@@ -2814,6 +3120,10 @@ def handle_text(message):
             f"💰 Баланс: <b>{format_balance(user_data.get('balance', 0.0))} ₽</b>"
         )
         bot.send_message(chat_id, profile_text, parse_mode="HTML", reply_markup=get_profile_keyboard(user_id))
+        return
+
+    if btn_equals(text, LANGUAGES[lang]["main_my_purchases"]):
+        show_purchases_page(chat_id, user_id, user_id, page=1)
         return
 
     if btn_equals(text, LANGUAGES[lang]["settings"]):
@@ -2843,9 +3153,12 @@ def handle_text(message):
         bot.send_message(chat_id, LANGUAGES[lang]["welcome"], reply_markup=get_main_keyboard(user_id))
         return
 
-    # === НОВОЕ: кнопка «Пользователи» в админ-панели ===
     if is_admin(user_id) and (btn_equals(text, LANGUAGES["ru"]["btn_users"]) or btn_equals(text, LANGUAGES["en"]["btn_users"])):
         show_admin_users_page(chat_id, user_id, page=1)
+        return
+
+    if is_admin(user_id) and btn_equals(text, LANGUAGES[lang]["reviews_list_btn"]):
+        show_pending_reviews(chat_id, user_id)
         return
 
     if is_admin(user_id) and btn_equals(text, LANGUAGES[lang]["ticket_view_list"]):
@@ -2955,11 +3268,15 @@ def handle_text(message):
 def handle_user_photo(message):
     if check_strict_block_and_notify_message(message):
         return
+
     user_id = message.from_user.id
     if not check_user_access(user_id):
         send_access_denied(message)
         return
-    if user_states.get(user_id) == "deposit_wait_screenshot":
+
+    state = user_states.get(user_id)
+
+    if state == "deposit_wait_screenshot":
         deposit_id = deposit_context.get(user_id)
         if not deposit_id:
             bot.send_message(message.chat.id, "❌ Ошибка: не найдена активная заявка.")
@@ -2973,6 +3290,22 @@ def handle_user_photo(message):
         clear_user_state(user_id)
         deposit_context.pop(user_id, None)
         return
+
+    if state == "review_wait_screenshot":
+        file_id = message.photo[-1].file_id
+        user_states[user_id] = {
+            "type": "review_flow",
+            "step": "choose_product",
+            "screenshot_file_id": file_id
+        }
+        bot.send_message(message.chat.id, LANGUAGES[get_lang(user_id)]["review_photo_received"])
+        bot.send_message(
+            message.chat.id,
+            LANGUAGES[get_lang(user_id)]["review_choose_category"],
+            reply_markup=get_review_category_keyboard(get_lang(user_id))
+        )
+        return
+
     bot.send_message(message.chat.id, "ℹ️ Для тикета с фото используйте <code>/ticket [текст]</code>.", parse_mode="HTML")
 
 
@@ -2993,24 +3326,179 @@ def handle_callback(call):
         bot.answer_callback_query(call.id)
         return
 
-    # ===================================================
-    # === НОВОЕ: СПИСОК ПОКУПОК (пагинация) ===
-    # ===================================================
-    if call.data.startswith("my_purchases_"):
-        # Формат: my_purchases_{page}_{target_uid}
+    if call.data.startswith("review_start_"):
+        target_uid = int(call.data.replace("review_start_", ""))
+        if target_uid != user_id:
+            bot.answer_callback_query(call.id, "Можно отправить отзыв только за свои покупки.", show_alert=True)
+            return
+        user_states[user_id] = "review_wait_screenshot"
+        bot.answer_callback_query(call.id)
+        bot.send_message(chat_id, "📸 Отправьте скриншот отзыва.")
+        return
+
+    if call.data == "review_cancel":
+        clear_user_state(user_id)
+        bot.answer_callback_query(call.id, "Отменено")
+        try:
+            bot.edit_message_text("❌ Действие отменено.", chat_id, msg_id)
+        except Exception:
+            pass
+        return
+
+    if call.data.startswith("review_product_"):
+        product_key = call.data.replace("review_product_", "")
+        state = user_states.get(user_id)
+
+        if not isinstance(state, dict) or state.get("type") != "review_flow":
+            bot.answer_callback_query(call.id, "Сессия отзыва истекла.", show_alert=True)
+            return
+
+        state["step"] = "choose_period"
+        state["product_key"] = product_key
+        user_states[user_id] = state
+
+        product_name = PRODUCTS.get(product_key, {}).get("name", product_key)
+        bot.edit_message_text(
+            LANGUAGES[lang]["review_choose_period"].format(product_name),
+            chat_id,
+            msg_id,
+            reply_markup=get_review_period_keyboard(product_key, lang)
+        )
+        bot.answer_callback_query(call.id)
+        return
+
+    if call.data.startswith("review_period_"):
         parts = call.data.split("_")
-        # my_purchases_1_12345 -> parts = ["my", "purchases", "1", "12345"]
+        product_key = parts[2]
+        period = parts[3]
+
+        state = user_states.get(user_id)
+        if not isinstance(state, dict) or state.get("type") != "review_flow":
+            bot.answer_callback_query(call.id, "Сессия отзыва истекла.", show_alert=True)
+            return
+
+        screenshot_file_id = state.get("screenshot_file_id")
+        if not screenshot_file_id:
+            clear_user_state(user_id)
+            bot.answer_callback_query(call.id, "Не найден скриншот.", show_alert=True)
+            return
+
+        review_id = create_review(user_id, screenshot_file_id, product_key, period)
+        clear_user_state(user_id)
+
+        if not review_id:
+            bot.answer_callback_query(call.id, "Ошибка создания отзыва.", show_alert=True)
+            return
+
+        product_text = get_review_product_display(product_key, period)
+
+        bot.send_message(
+            chat_id,
+            LANGUAGES[lang]["review_sent_success"].format(review_id, product_text)
+        )
+
+        notify_admins_about_new_review(review_id, user_id, product_text)
+        bot.answer_callback_query(call.id, "✅ Отправлено")
+        return
+
+    if call.data == "reviews_list":
+        if not is_admin(user_id):
+            bot.answer_callback_query(call.id, "⛔ Доступ запрещён", show_alert=True)
+            return
+        show_pending_reviews(chat_id, user_id, edit_msg_id=msg_id)
+        bot.answer_callback_query(call.id)
+        return
+
+    if call.data.startswith("review_view_"):
+        if not is_admin(user_id):
+            bot.answer_callback_query(call.id, "⛔ Доступ запрещён", show_alert=True)
+            return
+
+        review_id = int(call.data.replace("review_view_", ""))
+        review = get_review_by_id(review_id)
+        if not review:
+            bot.answer_callback_query(call.id, "❌ Отзыв не найден", show_alert=True)
+            return
+
+        product_text = get_review_product_display(review[3], review[4])
+        status_text = get_review_status_text(review[5], lang)
+        text = LANGUAGES[lang]["review_info_title"].format(
+            review[0],
+            review[1],
+            format_timestamp(review[9]),
+            status_text,
+            product_text
+        )
+
+        markup = get_reviews_admin_keyboard(review_id, lang)
+
+        try:
+            bot.send_photo(chat_id, review[2], caption=text, parse_mode="HTML", reply_markup=markup)
+        except Exception:
+            bot.send_message(chat_id, text + "\n\n⚠️ Фото недоступно.", parse_mode="HTML", reply_markup=markup)
+
+        bot.answer_callback_query(call.id)
+        return
+
+    if call.data.startswith("review_reject_"):
+        if not is_admin(user_id):
+            bot.answer_callback_query(call.id, "⛔ Доступ запрещён", show_alert=True)
+            return
+
+        review_id = int(call.data.replace("review_reject_", ""))
+        review = get_review_by_id(review_id)
+        if not review:
+            bot.answer_callback_query(call.id, "❌ Отзыв не найден", show_alert=True)
+            return
+
+        product_text = get_review_product_display(review[3], review[4])
+        ok = update_review_status(review_id, "rejected", admin_id=user_id)
+
+        if not ok:
+            bot.answer_callback_query(call.id, "❌ Не удалось отклонить. Возможно, уже обработан.", show_alert=True)
+            return
+
+        try:
+            target_lang = get_lang(review[1])
+            bot.send_message(
+                review[1],
+                LANGUAGES[target_lang]["review_rejected_user"].format(review_id, product_text)
+            )
+        except Exception as e:
+            logger.error(f"Ошибка отправки отклонения пользователю {review[1]}: {e}")
+
+        log_admin_action(user_id, f"rejected_review review_id={review_id} user_id={review[1]} product='{product_text}'")
+        bot.answer_callback_query(call.id, "❌ Отзыв отклонён")
+        show_pending_reviews(chat_id, user_id)
+        return
+
+    if call.data.startswith("review_approve_"):
+        if not is_admin(user_id):
+            bot.answer_callback_query(call.id, "⛔ Доступ запрещён", show_alert=True)
+            return
+
+        review_id = int(call.data.replace("review_approve_", ""))
+        review = get_review_by_id(review_id)
+        if not review:
+            bot.answer_callback_query(call.id, "❌ Отзыв не найден", show_alert=True)
+            return
+
+        user_states[user_id] = f"awaiting_review_key_{review_id}"
+        bot.answer_callback_query(call.id)
+        bot.send_message(chat_id, LANGUAGES[lang]["review_enter_key"].format(review_id))
+        return
+
+    if call.data.startswith("my_purchases_"):
+        parts = call.data.split("_")
         page = int(parts[2])
         target_uid = int(parts[3])
         show_purchases_page(chat_id, user_id, target_uid, page, edit_msg_id=msg_id)
         bot.answer_callback_query(call.id)
         return
 
-    # === НОВОЕ: Деталь позиции ===
     if call.data.startswith("pur_item_"):
-        # Формат: pur_item_{номер}_{page}_{target_uid}
         parts = call.data.split("_")
-        item_num = int(parts[2])  # 1-based на странице
+        item_num = int(parts[2])
         page = int(parts[3])
         target_uid = int(parts[4])
 
@@ -3030,7 +3518,6 @@ def handle_callback(call):
         bot.answer_callback_query(call.id)
         return
 
-    # === НОВОЕ: Поиск покупок ===
     if call.data.startswith("pur_search_"):
         target_uid = int(call.data.replace("pur_search_", ""))
         user_states[user_id] = f"pur_search_awaiting_{target_uid}"
@@ -3038,7 +3525,6 @@ def handle_callback(call):
         bot.answer_callback_query(call.id)
         return
 
-    # === НОВОЕ: Скачать .txt ===
     if call.data.startswith("pur_download_"):
         target_uid = int(call.data.replace("pur_download_", ""))
         try:
@@ -3052,9 +3538,6 @@ def handle_callback(call):
         bot.answer_callback_query(call.id)
         return
 
-    # ===================================================
-    # === НОВОЕ: АДМИН — СПИСОК ПОЛЬЗОВАТЕЛЕЙ ===
-    # ===================================================
     if call.data.startswith("adm_users_"):
         if not is_admin(user_id):
             bot.answer_callback_query(call.id, "⛔ Доступ запрещён", show_alert=True)
@@ -3064,13 +3547,11 @@ def handle_callback(call):
         bot.answer_callback_query(call.id)
         return
 
-    # === НОВОЕ: АДМИН — ДЕТАЛЬНЫЙ ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ ===
     if call.data.startswith("adm_userinfo_"):
         if not is_admin(user_id):
             bot.answer_callback_query(call.id, "⛔ Доступ запрещён", show_alert=True)
             return
         parts = call.data.split("_")
-        # adm_userinfo_12345_1 -> parts = ["adm", "userinfo", "12345", "1"]
         target_uid = int(parts[2])
         from_page = int(parts[3])
         target_user = get_user_from_db(target_uid)
@@ -3086,7 +3567,6 @@ def handle_callback(call):
         bot.answer_callback_query(call.id)
         return
 
-    # === НОВОЕ: АДМИН — НАКАЗАНИЯ ПОЛЬЗОВАТЕЛЯ ===
     if call.data.startswith("adm_punish_"):
         if not is_admin(user_id):
             bot.answer_callback_query(call.id, "⛔ Доступ запрещён", show_alert=True)
@@ -3106,7 +3586,6 @@ def handle_callback(call):
         bot.answer_callback_query(call.id)
         return
 
-    # === ADDKEY интерактивный ===
     if call.data == "addkey_cancel":
         user_states.pop(f"addkey_{user_id}", None)
         bot.answer_callback_query(call.id, "Отменено")
@@ -3153,7 +3632,6 @@ def handle_callback(call):
         )
         return
 
-    # === МЕНЮ ДОСТУПА ===
     if call.data == "access_back":
         if not is_admin(user_id):
             bot.answer_callback_query(call.id, "⛔")
@@ -3216,7 +3694,6 @@ def handle_callback(call):
             bot.answer_callback_query(call.id, "❌ Ошибка", show_alert=True)
         return
 
-    # === РАССЫЛКА ===
     if call.data == "broadcast_confirm":
         if not is_admin(user_id):
             return
@@ -3246,7 +3723,6 @@ def handle_callback(call):
         bot.edit_message_text("❌ Рассылка отменена.", chat_id, msg_id, reply_markup=None)
         return
 
-    # === НАВИГАЦИЯ ===
     if call.data == "admin_back_btn":
         if not is_admin(user_id):
             return
@@ -3386,7 +3862,6 @@ def handle_callback(call):
             bot.answer_callback_query(call.id, "✅ Покупка успешна!")
             return
 
-    # === ДЕПОЗИТЫ ===
     if call.data.startswith("deposit_start_"):
         if int(call.data.split("_")[2]) != user_id:
             bot.answer_callback_query(call.id, "Только для себя.")
@@ -3496,7 +3971,6 @@ def handle_callback(call):
         bot.answer_callback_query(call.id)
         return
 
-    # === ТИКЕТЫ ===
     if call.data.startswith("open_ticket_"):
         if not is_admin(user_id):
             return
@@ -3571,7 +4045,6 @@ def handle_callback(call):
         bot.answer_callback_query(call.id)
         return
 
-    # === ПРЕДУПРЕЖДЕНИЯ ===
     if call.data.startswith("warn_level_"):
         if not is_super_admin(user_id):
             return
@@ -3586,7 +4059,6 @@ def handle_callback(call):
         bot.answer_callback_query(call.id)
         return
 
-    # === МОИ ТИКЕТЫ ===
     if call.data == "my_tickets":
         if not check_user_access(user_id):
             bot.answer_callback_query(call.id, "⛔")
@@ -3613,7 +4085,10 @@ def main():
         user_languages = {}
         deposit_context = {}
 
+        os.makedirs(KEYS_FOLDER, exist_ok=True)
+
         init_database()
+        restore_state_from_storage()
         refresh_key_files()
         init_admins_database()
 
