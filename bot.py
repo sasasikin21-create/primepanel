@@ -2,6 +2,7 @@ import logging
 import telebot
 from telebot import types
 
+import html  # ADDED
 import json
 import math
 import os
@@ -11,7 +12,7 @@ import sqlite3
 import string
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone  # MODIFIED
 from threading import Lock, RLock, Thread
 from typing import Optional, List, Tuple, Dict
 from io import BytesIO
@@ -30,6 +31,13 @@ if not BOT_TOKEN:
 PAYMENT_REQUISITES = """🟢 Сбербанк 🟢
 +79085545373
 Александр Валерьевич Ш."""
+
+# ADDED: ссылка для кнопки "📚 Файлы"
+FILES_URL = os.getenv("FILES_URL", "https://example.com/files")
+
+# ADDED: единое смещение времени +4:00
+ADMIN_TIME_OFFSET_HOURS = int(os.getenv("ADMIN_TIME_OFFSET_HOURS", "4"))
+DISPLAY_TZ = timezone(timedelta(hours=ADMIN_TIME_OFFSET_HOURS))
 
 TMP_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(TMP_DIR, exist_ok=True)
@@ -70,6 +78,9 @@ user_languages: Dict[int, str] = {}
 user_states: Dict = {}
 db_connection: Optional[sqlite3.Connection] = None
 deposit_context: Dict[int, int] = {}
+
+# ADDED: запоминаем выбранного в админке пользователя
+selected_admin_users: Dict[int, int] = {}
 
 db_lock = Lock()
 storage_lock = RLock()
@@ -151,7 +162,7 @@ LANGUAGES = {
         "profile": "👤 Профиль",
         "back_menu": "🔙 Назад в меню",
         "language": "🏳️ Язык",
-        "top_up_balance": "💳 Пополнить баланс",
+        "top_up_balance": "💳 Пополнить баланс",  # MODIFIED
         "admin_panel": "🛠️ Админ-панель",
         "admin_menu_title": "<b>🛠️ АДМИН-ПАНЕЛЬ</b>",
         "purchase_success": "✅ <b>ПОКУПКА УСПЕШНА!</b>\n\n🔑 Товар: {}\n🔢 Кол-во: {}\n💵 Списано: {} ₽\n💰 Остаток: {} ₽\n\n🔐 Ваши ключи:\n{}",
@@ -234,7 +245,8 @@ LANGUAGES = {
         "search_results": "🔍 <b>Результаты поиска:</b>\n\n",
         "search_empty": "🔍 Ничего не найдено.",
         "admin_users_title": "👥 <b>Пользователи ({})</b>",
-        "admin_user_profile": "👤 <b>Профиль пользователя</b>\n\nℹ️ Авторизован в панель — {}\n💳 Баланс: <b>{} ₽</b>",
+        # MODIFIED: добавлено поле user_id
+        "admin_user_profile": "👤 <b>Профиль пользователя</b>\n\nℹ️ Авторизован в панель — {}\n💳 Баланс: <b>{} ₽</b>\n🗂 user_id: <code>{}</code>",
         "btn_user_purchases": "🛍 Список покупок",
         "btn_user_punishments": "❌ Список наказаний",
         "punishments_title": "❌ <b>Список наказаний</b>\n\n",
@@ -261,6 +273,16 @@ LANGUAGES = {
         "review_status_approved": "Одобрен",
         "review_status_rejected": "Отклонён",
         "review_cancel_btn": "❌ Отмена",
+
+        # ADDED
+        "files_btn": "📚 Файлы",
+        "invalid_min_deposit": "🔷 Пополнение баланса от 200 рублей. Вы ввели недопустимое количество: {}",
+        "admin_topup_btn": "💸 Пополнить",
+        "admin_reset_btn": "🧯 Обнулить",
+        "admin_topup_enter_amount": "💸 Введите сумму для пополнения пользователя <code>{}</code>.\n\nДля отмены: /cancel",
+        "admin_topup_success": "✅ Баланс пользователя <code>{}</code> пополнен на <b>{} ₽</b>.\n💳 Новый баланс: <b>{} ₽</b>",
+        "admin_reset_success": "✅ Баланс пользователя <code>{}</code> обнулён.",
+        "review_request_screenshot": "📸 Отправьте скриншот отзыва.",
     },
     "en": {
         "welcome": "👋 Hello! Choose section:",
@@ -353,7 +375,8 @@ LANGUAGES = {
         "search_results": "🔍 <b>Search results:</b>\n\n",
         "search_empty": "🔍 Nothing found.",
         "admin_users_title": "👥 <b>Users ({})</b>",
-        "admin_user_profile": "👤 <b>User Profile</b>\n\nℹ️ Authorized at — {}\n💳 Balance: <b>{}</b>",
+        # MODIFIED
+        "admin_user_profile": "👤 <b>User Profile</b>\n\nℹ️ Authorized at — {}\n💳 Balance: <b>{} ₽</b>\n🗂 user_id: <code>{}</code>",
         "btn_user_purchases": "🛍 Shopping List",
         "btn_user_punishments": "❌ Punishments List",
         "punishments_title": "❌ <b>Punishments list</b>\n\n",
@@ -380,32 +403,70 @@ LANGUAGES = {
         "review_status_approved": "Approved",
         "review_status_rejected": "Rejected",
         "review_cancel_btn": "❌ Cancel",
+
+        # ADDED
+        "files_btn": "📚 Files",
+        "invalid_min_deposit": "🔷 Balance top up starts from 200 rubles. You entered an invalid amount: {}",
+        "admin_topup_btn": "💸 Top up",
+        "admin_reset_btn": "🧯 Reset",
+        "admin_topup_enter_amount": "💸 Enter the amount to top up user <code>{}</code>.\n\nTo cancel: /cancel",
+        "admin_topup_success": "✅ User <code>{}</code> balance topped up by <b>{} ₽</b>.\n💳 New balance: <b>{} ₽</b>",
+        "admin_reset_success": "✅ User <code>{}</code> balance reset.",
+        "review_request_screenshot": "📸 Send a screenshot of the review.",
     }
 }
 
 # ========================================
 # УТИЛИТЫ
 # ========================================
+# MODIFIED: защищаем HTML и фигурные скобки
 def safe_text(value) -> str:
-    return str(value).replace("{", "{{").replace("}", "}}")
+    return html.escape(str(value), quote=False).replace("{", "{{").replace("}", "}}")
 
 
-def format_timestamp(timestamp=None) -> str:
-    if timestamp is None:
-        return datetime.now().strftime("%d.%m.%Y %H:%M")
-    if isinstance(timestamp, datetime):
-        return timestamp.strftime("%d.%m.%Y %H:%M")
-    if isinstance(timestamp, str):
+# ADDED: перевод времени в интерфейсный timezone +4
+def _to_display_datetime(value) -> Optional[datetime]:
+    if value is None:
+        return datetime.now(DISPLAY_TZ)
+
+    if isinstance(value, (int, float)):
         try:
-            dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-            return dt.strftime("%d.%m.%Y %H:%M")
+            return datetime.fromtimestamp(float(value), tz=timezone.utc).astimezone(DISPLAY_TZ)
+        except Exception:
+            return None
+
+    dt = None
+
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, str):
+        raw = value.strip()
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
         except Exception:
             for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
                 try:
-                    return datetime.strptime(timestamp, fmt).strftime("%d.%m.%Y %H:%M")
+                    dt = datetime.strptime(raw, fmt)
+                    break
                 except Exception:
                     pass
-    return "N/A"
+
+    if dt is None:
+        return None
+
+    if dt.tzinfo is None:
+        # MODIFIED: SQLite CURRENT_TIMESTAMP трактуем как UTC
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    return dt.astimezone(DISPLAY_TZ)
+
+
+# MODIFIED: все даты выводятся с учетом +4:00
+def format_timestamp(timestamp=None) -> str:
+    dt = _to_display_datetime(timestamp)
+    if not dt:
+        return "N/A"
+    return dt.strftime("%d.%m.%Y %H:%M")
 
 
 def get_lang(user_id: int) -> str:
@@ -453,6 +514,8 @@ def clear_user_state(user_id: int):
     user_states.pop(user_id, None)
     user_states.pop(f"broadcast_{user_id}", None)
     user_states.pop(f"addkey_{user_id}", None)
+    # ADDED
+    selected_admin_users.pop(user_id, None)
 
 
 def cache_get(key: str):
@@ -793,7 +856,8 @@ def get_user_from_db(user_id: int) -> Optional[Tuple]:
 
 
 @safe_db_operation
-def update_user_info(user_id: int, first_name: str, last_name: str, username: str) -> bool:
+def update_user_info(user_id: int, first_name: str, last_name: str, username: str, notify_if_new: bool = True) -> bool:
+    # MODIFIED: добавлен параметр notify_if_new, чтобы не дублировать уведомления при /login
     conn = get_db_connection()
     cursor = conn.cursor()
     existing = raw_get_user_row(user_id)
@@ -828,7 +892,7 @@ def update_user_info(user_id: int, first_name: str, last_name: str, username: st
             data[uid].setdefault("created_at", created_at)
         save_users_data(data)
 
-    if not existed_before:
+    if not existed_before and notify_if_new:
         log_new_user(user_id, first_name, last_name, username)
         notify_admins_about_new_user(user_id, first_name, last_name, username)
     return True
@@ -1073,8 +1137,9 @@ def get_strict_sanction(user_id: int) -> Optional[Tuple]:
 
 
 def strict_block_message(until_ts: int) -> str:
-    until_dt = datetime.fromtimestamp(int(until_ts))
-    return f"🚫 Доступ заблокирован (строгий выговор). Действует до: {until_dt.strftime('%d.%m.%Y %H:%M')}"
+    # MODIFIED: выводим через +4:00
+    until_dt = _to_display_datetime(int(until_ts))
+    return f"🚫 Доступ заблокирован (строгий выговор). Действует до: {until_dt.strftime('%d.%m.%Y %H:%M') if until_dt else 'N/A'}"
 
 
 def is_user_strict_blocked(user_id: int) -> Tuple[bool, Optional[int]]:
@@ -1137,7 +1202,7 @@ def apply_strict_sanction(user_id: int, admin_id: int):
     """, (user_id, until_ts, restore_access, admin_id, created_ts))
     conn.commit()
 
-    add_punishment(user_id, "Строгий выговор", f"Блокировка до {datetime.fromtimestamp(until_ts).strftime('%d.%m.%Y %H:%M')}. Выдал: {admin_id}")
+    add_punishment(user_id, "Строгий выговор", f"Блокировка до {format_timestamp(until_ts)}. Выдал: {admin_id}")
 
 
 def process_single_expired_sanction(user_id: int):
@@ -1355,11 +1420,41 @@ def check_and_use_password(password_text: str, user_id: int) -> bool:
             return False
 
 
+# ADDED: уведомление админам о корректном /login в нужном формате
+def notify_admins_about_successful_login(user_id: int, first_name: str, last_name: str, username: str):
+    full_name = (first_name or "") + (f" {last_name}" if last_name else "")
+    full_name = full_name.strip() or "Не указано"
+    display_username = f"@{username}" if username else "не указан"
+
+    text = (
+        f"🔔 <b>Новый пользователь!</b>\n"
+        f"👤 Имя: {safe_text(full_name)}\n"
+        f"🆔 username: {safe_text(display_username)}\n"
+        f"🔢 ID: {user_id}\n"
+        f"⏰ Время: {format_timestamp()}"
+    )
+
+    for admin_id in get_all_admins():
+        try:
+            bot.send_message(admin_id, text, parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"Ошибка отправки уведомления о /login админу {admin_id}: {e}")
+
+
 def handle_login(message):
+    # MODIFIED: при успешном /login отправляется уведомление администраторам
     user_id = message.from_user.id
     password_text = (message.text or "").strip()
     result = check_and_use_password(password_text, user_id)
     if result:
+        first_name = message.from_user.first_name or ""
+        last_name = message.from_user.last_name or ""
+        username = message.from_user.username or ""
+
+        # MODIFIED: без duplicate уведомления о "новом пользователе"
+        update_user_info(user_id, first_name, last_name, username, notify_if_new=False)
+        notify_admins_about_successful_login(user_id, first_name, last_name, username)
+
         clear_user_state(user_id)
         bot.send_message(message.chat.id, LANGUAGES[get_lang(user_id)]["password_used_success"])
     else:
@@ -1606,8 +1701,8 @@ def notify_admins_about_new_user(user_id: int, first_name: str, last_name: str, 
     display_username = f"@{username}" if username else "не указан"
     text = (
         f"🔔 <b>Новый пользователь!</b>\n\n"
-        f"👤 Имя: {full_name}\n"
-        f"🆔 username: {display_username}\n"
+        f"👤 Имя: {safe_text(full_name)}\n"
+        f"🆔 username: {safe_text(display_username)}\n"
         f"🔢 ID: {user_id}\n"
         f"⏰ Время: {format_timestamp()}"
     )
@@ -1664,11 +1759,11 @@ def notify_admins_about_warning(user_id: int, stage: int, reason: str, admin_id:
     stage_name = WARNING_LEVELS[stage][0] if stage in WARNING_LEVELS else str(stage)
     notification_text = (
         f"🚨 ВЫДАНО ПРЕДУПРЕЖДЕНИЕ\n\n"
-        f"Пользователь: {target_username}\n"
+        f"Пользо��атель: {target_username}\n"
         f"Уровень: {stage} ({stage_name})\n"
         f"Причина: {reason}\n"
         f"Выдал: {admin_username}\n"
-        f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        f"Дата: {format_timestamp()}"
     )
     for admin_id_notify in get_all_admins():
         try:
@@ -2039,9 +2134,14 @@ def show_pending_reviews(chat_id: int, user_id: int, edit_msg_id: int = None):
 def get_main_keyboard(user_id: int) -> types.ReplyKeyboardMarkup:
     lang = get_lang(user_id)
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+
+    # MODIFIED:
+    # REMOVED: кнопка "📋 Мои покупки" из главного меню
+    # ADDED: кнопка "⭐️ Отправить отзыв" вместо неё
     kb.row(LANGUAGES[lang]["products"], LANGUAGES[lang]["profile"])
-    kb.row(LANGUAGES[lang]["main_my_purchases"], LANGUAGES[lang]["support"])
+    kb.row(LANGUAGES[lang]["send_review"], LANGUAGES[lang]["support"])
     kb.row(LANGUAGES[lang]["settings"])
+
     if is_admin(user_id):
         kb.row(LANGUAGES[lang]["admin_panel"])
     return kb
@@ -2087,7 +2187,11 @@ def get_subscriptions_keyboard(product_key: str, category_key: str) -> types.Inl
 def get_profile_keyboard(user_id: int) -> types.InlineKeyboardMarkup:
     lang = get_lang(user_id)
     markup = types.InlineKeyboardMarkup(row_width=1)
-    markup.add(types.InlineKeyboardButton("💳 Создать заявку на баланс", callback_data=f"deposit_start_{user_id}"))
+
+    # MODIFIED:
+    # REMOVED: "💳 Создать заявку на баланс"
+    # ADDED: "💳 Пополнить баланс"
+    markup.add(types.InlineKeyboardButton(LANGUAGES[lang]["top_up_balance"], callback_data=f"deposit_start_{user_id}"))
     markup.add(types.InlineKeyboardButton(LANGUAGES[lang]["shopping_list_btn"], callback_data=f"my_purchases_1_{user_id}"))
     markup.add(types.InlineKeyboardButton(LANGUAGES[lang]["my_tickets"], callback_data="my_tickets"))
     markup.add(types.InlineKeyboardButton("🔙 Назад в меню", callback_data="back_to_menu"))
@@ -2126,11 +2230,14 @@ def get_insufficient_funds_keyboard(user_id: int) -> types.InlineKeyboardMarkup:
 def get_admin_keyboard(user_id: int) -> types.ReplyKeyboardMarkup:
     lang = get_lang(user_id)
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    kb.add("📊 Наличие", "💸 Пополнить", "🧯 Обнулить", "🔓 Выдать доступ", "⚖️ Выдать варн",
-           LANGUAGES[lang]["ticket_view_list"])
+
+    # MODIFIED:
+    # REMOVED: "💸 Пополнить", "🧯 Обнулить" из общего меню админки
+    kb.add("📊 Наличие", "🔓 Выдать доступ", "⚖️ Выдать варн", LANGUAGES[lang]["ticket_view_list"])
     kb.add(LANGUAGES[lang]["broadcast"], LANGUAGES[lang]["check_deposits_btn"])
     kb.add(LANGUAGES[lang]["reviews_list_btn"])
     kb.add(LANGUAGES[lang]["btn_users"])
+
     if is_super_admin(user_id):
         kb.add("🔑 Добавить ключ", "➕ Добавить админа", "👑 Супер-админ", "❌ Снять с админки",
                "🔐 Установить пароль админа")
@@ -2142,6 +2249,7 @@ def get_purchases_keyboard(page: int, total_pages: int, lang: str, target_uid: i
     markup = types.InlineKeyboardMarkup(row_width=5)
     nums = [types.InlineKeyboardButton(str(i), callback_data=f"pur_item_{i}_{page}_{target_uid}") for i in range(1, 6)]
     markup.row(*nums)
+
     nav = []
     if page > 1:
         nav.append(types.InlineKeyboardButton(LANGUAGES[lang]["btn_prev"], callback_data=f"my_purchases_{page - 1}_{target_uid}"))
@@ -2149,12 +2257,20 @@ def get_purchases_keyboard(page: int, total_pages: int, lang: str, target_uid: i
         nav.append(types.InlineKeyboardButton(LANGUAGES[lang]["btn_next"], callback_data=f"my_purchases_{page + 1}_{target_uid}"))
     if nav:
         markup.row(*nav)
+
     markup.row(
         types.InlineKeyboardButton(LANGUAGES[lang]["btn_search_key"], callback_data=f"pur_search_{target_uid}"),
         types.InlineKeyboardButton(LANGUAGES[lang]["btn_download_txt"], callback_data=f"pur_download_{target_uid}")
     )
-    if viewer_uid == target_uid:
-        markup.row(types.InlineKeyboardButton(LANGUAGES[lang]["send_review"], callback_data=f"review_start_{target_uid}"))
+
+    # REMOVED: кнопка отправки отзыва в разделе покупок
+    # if viewer_uid == target_uid:
+    #     markup.row(types.InlineKeyboardButton(LANGUAGES[lang]["send_review"], callback_data=f"review_start_{target_uid}"))
+
+    # ADDED: кнопка "📚 Файлы"
+    if FILES_URL:
+        markup.row(types.InlineKeyboardButton(LANGUAGES[lang]["files_btn"], url=FILES_URL))
+
     markup.row(
         types.InlineKeyboardButton(LANGUAGES[lang]["btn_refresh_list"], callback_data=f"my_purchases_1_{target_uid}"),
         types.InlineKeyboardButton(LANGUAGES[lang]["btn_to_catalog"], callback_data="back_to_menu")
@@ -2185,7 +2301,12 @@ def get_admin_users_keyboard(users: List[Tuple], page: int, total_pages: int, la
 
 
 def get_admin_user_detail_keyboard(target_uid: int, from_page: int, lang: str) -> types.InlineKeyboardMarkup:
-    markup = types.InlineKeyboardMarkup(row_width=1)
+    # MODIFIED: сюда перенесены кнопки пополнения и обнуления
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.row(
+        types.InlineKeyboardButton(LANGUAGES[lang]["admin_topup_btn"], callback_data=f"adm_topup_{target_uid}_{from_page}"),
+        types.InlineKeyboardButton(LANGUAGES[lang]["admin_reset_btn"], callback_data=f"adm_reset_{target_uid}_{from_page}")
+    )
     markup.add(types.InlineKeyboardButton(LANGUAGES[lang]["btn_user_purchases"], callback_data=f"my_purchases_1_{target_uid}"))
     markup.add(types.InlineKeyboardButton(LANGUAGES[lang]["btn_user_punishments"], callback_data=f"adm_punish_{target_uid}"))
     markup.add(types.InlineKeyboardButton("🔙 Назад к списку", callback_data=f"adm_users_{from_page}"))
@@ -2347,7 +2468,7 @@ def show_purchases_page(chat_id: int, user_id: int, target_uid: int, page: int, 
             num = start_num + idx
             key = p.get("key", "—")
             product = p.get("product", "—")
-            text += f"<b>{num}.</b> <code>{key}</code> | {product}\n"
+            text += f"<b>{num}.</b> <code>{safe_text(key)}</code> | {safe_text(product)}\n"
 
         markup = get_purchases_keyboard(page, total_pages, lang, target_uid, viewer_uid=user_id)
 
@@ -2380,7 +2501,7 @@ def show_admin_users_page(chat_id: int, user_id: int, page: int, edit_msg_id: in
                 label = first_name + (f" {last_name}" if last_name else "")
             else:
                 label = f"ID: {uid}"
-            text += f"• {label}\n"
+            text += f"• {safe_text(label)}\n"
 
         markup = get_admin_users_keyboard(users, page, total_pages, lang)
 
@@ -2535,7 +2656,7 @@ def cmd_my_warn(message):
         stage_name = WARNING_LEVELS.get(stage, (f"Уровень {stage}", ""))[0]
         time_formatted = format_timestamp(issued_at)
         text += f"<b>{idx}. {stage_name}</b> (от {time_formatted})\n"
-        text += f" <i>Причина:</i> {reason}\n\n"
+        text += f" <i>Причина:</i> {safe_text(reason)}\n\n"
     bot.reply_to(message, text, parse_mode="HTML")
 
 
@@ -2570,21 +2691,22 @@ def cmd_warn(message):
             return
         username_target = f"@{user_db[1]}" if user_db[1] else f"ID {target_id}"
         if stage == 1:
-            notif_text = f"🔔 Вам выдано <b>предупреждение</b>.\nПричина: {reason}"
+            notif_text = f"🔔 Вам выдано <b>предупреждение</b>.\nПричина: {safe_text(reason)}"
         elif stage == 2:
             notif_text = (
-                f"⚠️ Вам выдан <b>ВЫГОВОР</b>.\nПричина: {reason}\n"
+                f"⚠️ Вам выдан <b>ВЫГОВОР</b>.\nПричина: {safe_text(reason)}\n"
                 f"С вашего баланса списано 30%: {format_balance(result['old_balance'])} ₽ → {format_balance(result['new_balance'])} ₽"
             )
         else:
             row = get_strict_sanction(target_id)
             until_ts = int(row[1]) if row else int(time.time() + STRICT_WARN_DAYS * 86400)
-            notif_text = f"🚨 Вам выдан <b>СТРОГИЙ ВЫГОВОР</b>.\nПричина: {reason}\n\n{strict_block_message(until_ts)}"
+            notif_text = f"🚨 Вам выдан <b>СТРОГИЙ ВЫГОВОР</b>.\nПричина: {safe_text(reason)}\n\n{strict_block_message(until_ts)}"
         try:
             bot.send_message(target_id, notif_text, parse_mode="HTML")
         except Exception:
             pass
         notify_admins_about_warning(target_id, stage, reason, message.from_user.id)
+        log_admin_action(message.from_user.id, f"warn target_user={target_id} stage={stage}")
         bot.reply_to(message, f"✅ Предупреждение (ур. {stage}) успешно выдано пользователю {username_target}")
     except ValueError:
         bot.reply_to(message, "❌ Ошибка: ID и уровень должны быть числами")
@@ -2610,6 +2732,7 @@ def cmd_remove_warn(message):
     cursor.execute("DELETE FROM strict_sanctions WHERE user_id = ?", (target_id,))
     conn.commit()
     grant_user_access(target_id, message.from_user.id)
+    log_admin_action(message.from_user.id, f"remove_warn target_user={target_id}")
     bot.reply_to(message, f"✅ Снято. Пользователь <code>{target_id}</code>: варны/запреты сняты, доступ восстановлен.", parse_mode="HTML")
     try:
         bot.send_message(target_id, "✅ Ваши предупреждения/ограничения сняты администратором. Доступ восстановлен.")
@@ -2676,6 +2799,7 @@ def cmd_add_balance(message):
             return
         get_user_from_db(target_id)
         new_bal = update_user_balance(target_id, amount)
+        log_admin_action(message.from_user.id, f"manual_add_balance target_user={target_id} amount={amount} new_balance={new_bal}")
         bot.reply_to(message, f"✅ Баланс пользователя {target_id} пополнен на {int(amount)} ₽. Новый баланс: {int(new_bal)} ₽.")
         send_balance_notification(target_id, amount, new_bal)
     except (ValueError, IndexError):
@@ -2698,6 +2822,7 @@ def cmd_remove_admin(message):
         if not is_admin(target_id):
             return bot.reply_to(message, f"❌ Пользователь {target_id} не является админом.")
         remove_from_admin(target_id)
+        log_admin_action(message.from_user.id, f"remove_admin target_user={target_id}")
         bot.reply_to(message, f"✅ Права администратора у {target_id} отозваны.")
     except (ValueError, IndexError):
         bot.reply_to(message, "❌ Используйте: <code>/remove_admin ID</code>", parse_mode="HTML")
@@ -2715,6 +2840,7 @@ def cmd_add_super_admin(message):
         if is_super_admin(new_id):
             return bot.reply_to(message, f"⚠️ {new_id} уже супер-админ.")
         if add_to_admin("super", new_id):
+            log_admin_action(message.from_user.id, f"add_super_admin target_user={new_id}")
             bot.reply_to(message, f"✅ {new_id} назначен Супер-Админом!")
             try:
                 bot.send_message(new_id, "👑 Вы были назначены СУПЕР-АДМИНОМ!", parse_mode="HTML")
@@ -2736,6 +2862,7 @@ def cmd_add_admin(message):
         if is_admin(new_id):
             return bot.reply_to(message, f"⚠️ {new_id} уже админ.")
         if add_to_admin("regular", new_id):
+            log_admin_action(message.from_user.id, f"add_admin target_user={new_id}")
             bot.reply_to(message, f"✅ {new_id} назначен администратором.")
             try:
                 bot.send_message(new_id, "🛠️ Вы были назначены администратором!", parse_mode="HTML")
@@ -2790,7 +2917,8 @@ def cmd_addkey(message):
         if period not in PRODUCTS[product_key]["prices"]:
             return bot.reply_to(message, f"❌ Неверный период. Доступные: {', '.join(PRODUCTS[product_key]['prices'].keys())}")
         if add_key_to_file(product_key, period, key):
-            bot.reply_to(message, f"✅ Ключ <code>{key}</code> добавлен для {product_key} ({period}).", parse_mode="HTML")
+            log_admin_action(message.from_user.id, f"add_single_key product={product_key} period={period} key={mask_key(key)}")
+            bot.reply_to(message, f"✅ Ключ <code>{safe_text(key)}</code> добавлен для {product_key} ({period}).", parse_mode="HTML")
         else:
             bot.reply_to(message, "❌ Ошибка при добавлении ключа.")
     except Exception as e:
@@ -2856,6 +2984,7 @@ def cmd_help(message):
 def handle_text(message):
     if check_strict_block_and_notify_message(message):
         return
+
     user_id = message.from_user.id
     chat_id = message.chat.id
     text = message.text or ""
@@ -2873,6 +3002,9 @@ def handle_text(message):
         added = add_keys_bulk_to_file(product_key, period, keys)
         stock = get_keys_count(product_key, period)
         user_states.pop(f"addkey_{user_id}", None)
+
+        log_admin_action(user_id, f"bulk_add_keys product={product_key} period={period} added={added}")
+
         bot.send_message(
             chat_id,
             f"✅ Результат:\nДобавлено: <b>{added}</b>\nТеперь на складе: <b>{stock}</b>\n\nТовар: <b>{PRODUCTS[product_key]['name']}</b>\nПериод: <b>{period}</b>",
@@ -2900,8 +3032,49 @@ def handle_text(message):
             for idx, p in enumerate(results, 1):
                 key = p.get("key", "—")
                 product = p.get("product", "—")
-                result_text += f"{idx}. <code>{key}</code> | {product}\n"
+                result_text += f"{idx}. <code>{safe_text(key)}</code> | {safe_text(product)}\n"
             bot.send_message(chat_id, result_text, parse_mode="HTML")
+        return
+
+    # ADDED: пополнение через карточку пользователя
+    if isinstance(current_state, dict) and current_state.get("type") == "awaiting_admin_topup_amount":
+        if not is_admin(user_id):
+            clear_user_state(user_id)
+            bot.send_message(chat_id, "⛔ Доступ запрещён.")
+            return
+
+        target_uid = current_state.get("target_uid") or selected_admin_users.get(user_id)
+        if not target_uid:
+            clear_user_state(user_id)
+            bot.send_message(chat_id, "❌ Не найден выбранный пользователь.")
+            return
+
+        amount_raw = text.strip()
+        try:
+            amount = float(amount_raw.replace(",", "."))
+            if amount <= 0:
+                raise ValueError
+        except ValueError:
+            bot.send_message(chat_id, "❌ Отправьте корректную сумму больше 0.")
+            return
+
+        get_user_from_db(target_uid)
+        new_balance = update_user_balance(target_uid, amount)
+        clear_user_state(user_id)
+
+        log_admin_action(user_id, f"user_card_topup target_user={target_uid} amount={amount} new_balance={new_balance}")
+
+        try:
+            send_balance_notification(target_uid, amount, new_balance)
+        except Exception:
+            pass
+
+        bot.send_message(
+            chat_id,
+            LANGUAGES[lang]["admin_topup_success"].format(target_uid, format_balance(amount), format_balance(new_balance)),
+            parse_mode="HTML",
+            reply_markup=get_admin_keyboard(user_id)
+        )
         return
 
     if current_state:
@@ -2921,6 +3094,7 @@ def handle_text(message):
                 clear_user_state(user_id)
                 return
             if grant_user_access(target_id, user_id):
+                log_admin_action(user_id, f"grant_access target_user={target_id}")
                 try:
                     bot.send_message(target_id, LANGUAGES[get_lang(target_id)]["access_granted"], parse_mode="HTML")
                 except Exception:
@@ -2944,13 +3118,20 @@ def handle_text(message):
             return
 
         if current_state == "deposit_wait_amount":
+            amount_raw = text.strip()
             try:
-                amount = float(text.replace(",", "."))
+                amount = float(amount_raw.replace(",", "."))
                 if amount <= 0:
                     raise ValueError
             except ValueError:
                 bot.send_message(chat_id, "❌ Отправьте корректное число (например: 1000)")
                 return
+
+            # ADDED: валидация минимального пополнения
+            if amount < 200:
+                bot.send_message(chat_id, LANGUAGES[lang]["invalid_min_deposit"].format(amount_raw))
+                return
+
             deposit_id = create_deposit_request(user_id, amount)
             user_states[user_id] = "deposit_wait_screenshot"
             deposit_context[user_id] = deposit_id
@@ -2987,6 +3168,7 @@ def handle_text(message):
                 bot.send_message(target_user_id, LANGUAGES[target_lang]["ticket_new_reply_user"].format(ticket_id, safe_text(reply_text)), parse_mode="HTML")
             except Exception as e:
                 logger.error(f"Ошибка отправки ответа на тикет {ticket_id}: {e}")
+            log_admin_action(user_id, f"reply_ticket ticket_id={ticket_id} target_user={ticket[1]}")
             bot.send_message(chat_id, LANGUAGES[lang]["ticket_reply_sent_admin"].format(ticket_id), reply_markup=get_admin_keyboard(user_id))
             return
 
@@ -3017,24 +3199,26 @@ def handle_text(message):
                 return
             username_target = f"@{user_db[1]}" if user_db and user_db[1] else f"ID {target_id}"
             if stage == 1:
-                notif_text = f"🔔 Вам выдано <b>предупреждение</b>.\nПричина: {reason}"
+                notif_text = f"🔔 Вам выдано <b>предупреждение</b>.\nПричина: {safe_text(reason)}"
             elif stage == 2:
                 notif_text = (
-                    f"⚠️ Вам выдан <b>ВЫГОВОР</b>.\nПричина: {reason}\n"
+                    f"⚠️ Вам выдан <b>ВЫГОВОР</b>.\nПричина: {safe_text(reason)}\n"
                     f"Списано 30%: {format_balance(result['old_balance'])} ₽ → {format_balance(result['new_balance'])} ₽"
                 )
             else:
                 row = get_strict_sanction(target_id)
                 until_ts = int(row[1]) if row else int(time.time() + STRICT_WARN_DAYS * 86400)
-                notif_text = f"🚨 Вам выдан <b>СТРОГИЙ ВЫГОВОР</b>.\nПричина: {reason}\n\n{strict_block_message(until_ts)}"
+                notif_text = f"🚨 Вам выдан <b>СТРОГИЙ ВЫГОВОР</b>.\nПричина: {safe_text(reason)}\n\n{strict_block_message(until_ts)}"
             try:
                 bot.send_message(target_id, notif_text, parse_mode="HTML")
             except Exception:
                 pass
             notify_admins_about_warning(target_id, stage, reason, user_id)
+            log_admin_action(user_id, f"warn target_user={target_id} stage={stage}")
             bot.send_message(chat_id, f"✅ Предупреждение (ур. {stage}) выдано {username_target}", reply_markup=get_admin_keyboard(user_id))
             return
 
+        # LEGACY: оставлено для совместимости
         if current_state == "awaiting_reset_balance":
             try:
                 target_id = int(text.strip())
@@ -3052,6 +3236,7 @@ def handle_text(message):
                 update_user_balance(target_id, -old_balance)
             clear_user_state(user_id)
             username_target = f"@{user_db[1]}" if user_db and user_db[1] else f"ID {target_id}"
+            log_admin_action(user_id, f"legacy_reset_balance target_user={target_id} old_balance={old_balance}")
             bot.send_message(chat_id, f"✅ Баланс {username_target} обнулён.", reply_markup=get_admin_keyboard(user_id))
             return
 
@@ -3059,7 +3244,7 @@ def handle_text(message):
             clear_user_state(user_id)
             user_states[f"broadcast_{user_id}"] = text
             markup = get_broadcast_confirm_keyboard()
-            bot.send_message(chat_id, f"{LANGUAGES[lang]['broadcast_confirm']}\n\n<i>Ваше сообщение:</i>\n{text}", parse_mode="HTML", reply_markup=markup)
+            bot.send_message(chat_id, f"{LANGUAGES[lang]['broadcast_confirm']}\n\n<i>Ваше сообщение:</i>\n{safe_text(text)}", parse_mode="HTML", reply_markup=markup)
             return
 
         if isinstance(current_state, str) and current_state.startswith("awaiting_review_key_"):
@@ -3116,12 +3301,19 @@ def handle_text(message):
         profile_text = (
             f"👤 <b>Ваш профиль</b>\n\n"
             f"🆔 ID: <code>{user_id}</code>\n"
-            f"👤 Логин: @{username}\n"
+            f"👤 Логин: @{safe_text(username)}\n"
             f"💰 Баланс: <b>{format_balance(user_data.get('balance', 0.0))} ₽</b>"
         )
         bot.send_message(chat_id, profile_text, parse_mode="HTML", reply_markup=get_profile_keyboard(user_id))
         return
 
+    # ADDED: отзыв теперь из главного меню
+    if btn_equals(text, LANGUAGES[lang]["send_review"]):
+        user_states[user_id] = "review_wait_screenshot"
+        bot.send_message(chat_id, LANGUAGES[lang]["review_request_screenshot"])
+        return
+
+    # LEGACY: если пользователь каким-то образом отправит старый текст
     if btn_equals(text, LANGUAGES[lang]["main_my_purchases"]):
         show_purchases_page(chat_id, user_id, user_id, page=1)
         return
@@ -3210,9 +3402,9 @@ def handle_text(message):
         bot.send_message(chat_id, "🛡️ <b>Выберите уровень предупреждения:</b>", parse_mode="HTML", reply_markup=markup)
         return
 
+    # REMOVED: прямое обнуление из админки
     if btn_equals(text, "🧯 Обнулить") and is_admin(user_id):
-        user_states[user_id] = "awaiting_reset_balance"
-        bot.send_message(chat_id, "📌 Отправьте ID пользователя для обнуления.\n\n/cancel для отмены", parse_mode="HTML")
+        bot.send_message(chat_id, "ℹ️ Выберите пользователя в разделе «👥 Пользователи», затем нажмите кнопку «🧯 Обнулить».", parse_mode="HTML")
         return
 
     if btn_equals(text, LANGUAGES[lang]["broadcast"]) and is_admin(user_id):
@@ -3254,8 +3446,9 @@ def handle_text(message):
         bot.send_message(chat_id, "\n".join(lines), parse_mode="HTML")
         return
 
+    # REMOVED: прямая кнопка пополнения из админ-панели
     if btn_equals(text, "💸 Пополнить") and is_admin(user_id):
-        bot.send_message(chat_id, "Используйте: <code>/add_balance ID сумма</code>", parse_mode="HTML")
+        bot.send_message(chat_id, "ℹ️ Выберите пользователя в разделе «👥 Пользователи», затем нажмите кнопку «💸 Пополнить».", parse_mode="HTML")
         return
 
     bot.send_message(chat_id, LANGUAGES[lang]["unknown_command"], reply_markup=get_main_keyboard(user_id))
@@ -3327,13 +3520,14 @@ def handle_callback(call):
         return
 
     if call.data.startswith("review_start_"):
+        # LEGACY: оставлено для обратной совместимости
         target_uid = int(call.data.replace("review_start_", ""))
         if target_uid != user_id:
             bot.answer_callback_query(call.id, "Можно отправить отзыв только за свои покупки.", show_alert=True)
             return
         user_states[user_id] = "review_wait_screenshot"
         bot.answer_callback_query(call.id)
-        bot.send_message(chat_id, "📸 Отправьте скриншот отзыва.")
+        bot.send_message(chat_id, LANGUAGES[lang]["review_request_screenshot"])
         return
 
     if call.data == "review_cancel":
@@ -3511,7 +3705,7 @@ def handle_callback(call):
             product = p.get("product", "—")
             price = p.get("price", 0)
             date = format_timestamp(p.get("date"))
-            text = LANGUAGES[lang]["purchase_detail"].format(global_num, key, product, price, date)
+            text = LANGUAGES[lang]["purchase_detail"].format(global_num, safe_text(key), safe_text(product), price, date)
             bot.send_message(chat_id, text, parse_mode="HTML")
         else:
             bot.answer_callback_query(call.id, LANGUAGES[lang]["purchase_not_found"], show_alert=True)
@@ -3558,13 +3752,72 @@ def handle_callback(call):
         if not target_user:
             bot.answer_callback_query(call.id, "❌ Пользователь не найден", show_alert=True)
             return
+
+        # ADDED: запоминаем выбранного пользователя
+        selected_admin_users[user_id] = target_uid
+
         created_at = target_user[6] if target_user and len(target_user) > 6 else "N/A"
         auth_date = format_timestamp(created_at)
         balance = format_balance(float(target_user[4] or 0))
-        text = LANGUAGES[lang]["admin_user_profile"].format(auth_date, balance)
+
+        # MODIFIED: добавлен user_id в карточку
+        text = LANGUAGES[lang]["admin_user_profile"].format(auth_date, balance, target_uid)
         markup = get_admin_user_detail_keyboard(target_uid, from_page, lang)
         bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
         bot.answer_callback_query(call.id)
+        return
+
+    # ADDED: пополнение из карточки пользователя
+    if call.data.startswith("adm_topup_"):
+        if not is_admin(user_id):
+            bot.answer_callback_query(call.id, "⛔ Доступ запрещён", show_alert=True)
+            return
+        parts = call.data.split("_")
+        target_uid = int(parts[2])
+
+        selected_admin_users[user_id] = target_uid
+        user_states[user_id] = {
+            "type": "awaiting_admin_topup_amount",
+            "target_uid": target_uid
+        }
+
+        bot.answer_callback_query(call.id)
+        bot.send_message(chat_id, LANGUAGES[lang]["admin_topup_enter_amount"].format(target_uid), parse_mode="HTML")
+        return
+
+    # ADDED: обнуление из карточки пользователя
+    if call.data.startswith("adm_reset_"):
+        if not is_admin(user_id):
+            bot.answer_callback_query(call.id, "⛔ Доступ запрещён", show_alert=True)
+            return
+
+        parts = call.data.split("_")
+        target_uid = int(parts[2])
+        from_page = int(parts[3])
+
+        selected_admin_users[user_id] = target_uid
+
+        user_db = get_user_from_db(target_uid)
+        if not user_db:
+            bot.answer_callback_query(call.id, "❌ Пользователь не найден", show_alert=True)
+            return
+
+        user_data = get_user_data(target_uid)
+        old_balance = float(user_data.get("balance", 0.0) or 0.0)
+        if old_balance > 0:
+            update_user_balance(target_uid, -old_balance)
+
+        log_admin_action(user_id, f"user_card_reset_balance target_user={target_uid} old_balance={old_balance}")
+
+        created_at = user_db[6] if user_db and len(user_db) > 6 else "N/A"
+        auth_date = format_timestamp(created_at)
+        new_balance = format_balance(0)
+
+        text = LANGUAGES[lang]["admin_user_profile"].format(auth_date, new_balance, target_uid)
+        markup = get_admin_user_detail_keyboard(target_uid, from_page, lang)
+
+        bot.edit_message_text(text, chat_id, msg_id, parse_mode="HTML", reply_markup=markup)
+        bot.answer_callback_query(call.id, "✅ Баланс обнулён")
         return
 
     if call.data.startswith("adm_punish_"):
@@ -3580,8 +3833,8 @@ def handle_callback(call):
             for p in punishments:
                 p_type, p_desc, p_date = p
                 date_str = format_timestamp(p_date)
-                desc_text = f" — {p_desc}" if p_desc else ""
-                text += f"• <b>{p_type}</b> — {date_str}{desc_text}\n"
+                desc_text = f" — {safe_text(p_desc)}" if p_desc else ""
+                text += f"• <b>{safe_text(p_type)}</b> — {date_str}{desc_text}\n"
             bot.send_message(chat_id, text, parse_mode="HTML")
         bot.answer_callback_query(call.id)
         return
@@ -3712,6 +3965,10 @@ def handle_callback(call):
                 time.sleep(0.05)
             except Exception:
                 pass
+
+        # ADDED
+        log_admin_action(user_id, f"broadcast sent_count={sent_count}")
+
         bot.send_message(chat_id, LANGUAGES[lang]["broadcast_completed"].format(sent_count))
         return
 
@@ -3856,7 +4113,7 @@ def handle_callback(call):
             for key in keys:
                 add_purchase_record(user_id, full_product_name, price, key)
             notify_admins_about_purchase(user_id, full_product_name, quantity, total_price, keys)
-            keys_text = "\n".join([f"<code>{k}</code>" for k in keys])
+            keys_text = "\n".join([f"<code>{safe_text(k)}</code>" for k in keys])
             success_text = LANGUAGES[lang]["purchase_success"].format(full_product_name, quantity, format_balance(total_price), format_balance(new_balance), keys_text)
             bot.edit_message_text(success_text, chat_id, msg_id, parse_mode="HTML", reply_markup=get_rules_keyboard())
             bot.answer_callback_query(call.id, "✅ Покупка успешна!")
@@ -3910,9 +4167,12 @@ def handle_callback(call):
         if not is_admin(user_id):
             bot.answer_callback_query(call.id, "⛔", show_alert=True)
             return
+
         try:
-            action, deposit_id_str = call.data.split('_', 2)[0], call.data.split('_', 2)[2]
-            deposit_id = int(deposit_id_str)
+            parts = call.data.split("_")
+            action = parts[0]  # confirm / reject
+            deposit_id = int(parts[2])
+
             deposit = get_deposit_by_id(deposit_id)
             if not deposit:
                 bot.answer_callback_query(call.id, "❌ Заявка не найдена.", show_alert=True)
@@ -3922,36 +4182,59 @@ def handle_callback(call):
                     pass
                 show_deposit_requests(chat_id)
                 return
-            if deposit[4] != 'pending':
+
+            if deposit[4] != "pending":
                 bot.answer_callback_query(call.id, f"Уже обработана ({deposit[4]}).", show_alert=True)
                 return
-            if action == 'confirm':
+
+            target_user_id = int(deposit[1])
+            amount = float(deposit[2])
+
+            if action == "confirm":
                 if update_deposit_status(deposit_id, "confirmed", user_id):
-                    target_user_id = int(deposit[1])
-                    amount = float(deposit[2])
                     new_bal = update_user_balance(target_user_id, amount)
+
+                    log_admin_action(user_id, f"confirm_deposit deposit_id={deposit_id} target_user={target_user_id} amount={amount}")
+
                     try:
-                        bot.send_message(target_user_id, LANGUAGES[get_lang(target_user_id)]["deposit_confirmed_msg"].format(int(amount), int(new_bal)), parse_mode="HTML", timeout=10)
+                        bot.send_message(
+                            target_user_id,
+                            LANGUAGES[get_lang(target_user_id)]["deposit_confirmed_msg"].format(int(amount), int(new_bal)),
+                            parse_mode="HTML",
+                            timeout=10
+                        )
                     except Exception as e:
                         logger.error(f"Ошибка уведомления {target_user_id}: {e}")
+
                     bot.answer_callback_query(call.id, "✅ Подтверждено!")
                 else:
                     bot.answer_callback_query(call.id, "Уже обработана другим.", show_alert=True)
-            elif action == 'reject':
+
+            elif action == "reject":
                 if update_deposit_status(deposit_id, "rejected", user_id):
-                    target_user_id = int(deposit[1])
+                    log_admin_action(user_id, f"reject_deposit deposit_id={deposit_id} target_user={target_user_id} amount={amount}")
+
                     try:
-                        bot.send_message(target_user_id, LANGUAGES[get_lang(target_user_id)]["deposit_rejected_msg"].format("Проверьте реквизиты"), parse_mode="HTML", timeout=10)
+                        bot.send_message(
+                            target_user_id,
+                            LANGUAGES[get_lang(target_user_id)]["deposit_rejected_msg"].format("Проверьте реквизиты"),
+                            parse_mode="HTML",
+                            timeout=10
+                        )
                     except Exception as e:
                         logger.error(f"Ошибка уведомления {target_user_id}: {e}")
+
                     bot.answer_callback_query(call.id, "❌ Отклонено!")
                 else:
                     bot.answer_callback_query(call.id, "Уже обработана другим.", show_alert=True)
+
             try:
                 bot.delete_message(chat_id, msg_id)
             except Exception:
                 pass
+
             show_deposit_requests(chat_id)
+
         except Exception as e:
             logger.error(f"Ошибка обработки депозита {call.data}: {e}", exc_info=True)
             try:
@@ -4080,10 +4363,11 @@ def handle_callback(call):
 def main():
     try:
         logger.info("Выполняется чистый старт: сброс состояний...")
-        global user_states, user_languages, deposit_context
+        global user_states, user_languages, deposit_context, selected_admin_users
         user_states = {}
         user_languages = {}
         deposit_context = {}
+        selected_admin_users = {}
 
         os.makedirs(KEYS_FOLDER, exist_ok=True)
 
