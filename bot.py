@@ -12,7 +12,7 @@ import string
 import sys
 import time
 from datetime import datetime, timedelta
-from threading import Lock, Thread
+from threading import Lock, RLock, Thread
 from typing import Optional, List, Tuple, Dict
 from io import BytesIO
 
@@ -72,7 +72,7 @@ db_connection: Optional[sqlite3.Connection] = None
 deposit_context: Dict[int, int] = {}
 
 db_lock = Lock()
-storage_lock = Lock()
+storage_lock = RLock()
 key_lock = Lock()
 purchase_lock = Lock()
 cache_lock = Lock()
