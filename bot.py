@@ -158,7 +158,7 @@ LANGUAGES = {
         "welcome": "👋 Привет! Выберите раздел:",
         "settings": "⚙️ Настройки",
         "support": "🆘 Поддержка",
-        "products": "♦️ КАТАЛОГ ТОВАРОВ",
+        "products": "🛒 Каталог товаров",
         "profile": "👤 Профиль",
         "back_menu": "🔙 Назад в меню",
         "language": "🏳️ Язык",
@@ -288,7 +288,7 @@ LANGUAGES = {
         "welcome": "👋 Hello! Choose section:",
         "settings": "⚙️ Settings",
         "support": "🆘 Support",
-        "products": "♦️ PRODUCT CATALOG",
+        "products": "🛒 Product catalog",
         "profile": "👤 Profile",
         "back_menu": "🔙 Back to menu",
         "language": "🏳️ Language",
@@ -2135,15 +2135,18 @@ def get_main_keyboard(user_id: int) -> types.ReplyKeyboardMarkup:
     lang = get_lang(user_id)
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
 
-    # MODIFIED:
-    # REMOVED: кнопка "📋 Мои покупки" из главного меню
-    # ADDED: кнопка "⭐️ Отправить отзыв" вместо неё
-    kb.row(LANGUAGES[lang]["products"], LANGUAGES[lang]["profile"])
-    kb.row(LANGUAGES[lang]["send_review"], LANGUAGES[lang]["support"])
-    kb.row(LANGUAGES[lang]["settings"])
+    # 1-я строка — одна длинная кнопка
+    kb.add(LANGUAGES[lang]["products"])
+
+    # 2-я строка
+    kb.row(LANGUAGES[lang]["send_review"], LANGUAGES[lang]["profile"])
+
+    # 3-я строка
+    kb.row(LANGUAGES[lang]["support"], LANGUAGES[lang]["settings"])
 
     if is_admin(user_id):
         kb.row(LANGUAGES[lang]["admin_panel"])
+
     return kb
 
 
